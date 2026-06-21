@@ -23,6 +23,7 @@ from PyQt5.QtWidgets import (
     QLabel, QPushButton, QLineEdit, QComboBox, QProgressBar,
     QScrollArea, QFrame, QFileDialog, QMessageBox, QSizePolicy,
     QGridLayout, QSpacerItem, QStatusBar, QMenuBar, QAction,
+    QTreeWidget, QTreeWidgetItem,
 )
 from PyQt5.QtCore import (
     Qt, QThread, pyqtSignal, QObject, QTimer, QSize, QPoint, QRect,
@@ -155,6 +156,51 @@ UNSIGNED_FIELDS = {
     "ColorNoiseReductionDetail", "ColorNoiseReductionSmoothness",
     "SharpenRadius", "SharpenDetail", "SharpenEdgeMasking",
     "Texture", "PostCropVignetteAmount", "VignetteAmount",
+}
+
+SYNC_HIERARCHY = {
+    "Basic (基础)": {
+        "Auto (自动)": ["AutoLateralCA", "LensProfileEnable"],
+        "HDR (HDR)": ["HDREditMode"],
+        "Profile (配置文件)": ["CameraProfile"],
+        "WB (白平衡)": ["WhiteBalance", "Temperature", "Tint"],
+        "Tone (色调)": [
+            "Exposure2012", "Contrast2012", "Highlights2012",
+            "Shadows2012", "Whites2012", "Blacks2012"
+        ],
+        "Presence (外貌/偏好)": [
+            "Texture", "Clarity2012", "Dehaze", "Vibrance", "Saturation"
+        ]
+    },
+    "Tone Curve (色调曲线)": {
+        "Adjust (曲线调整)": [
+            "ToneCurvePV2012", "ToneCurvePV2012Red", "ToneCurvePV2012Green",
+            "ToneCurvePV2012Blue", "ToneCurveName2012"
+        ]
+    },
+    "HSL (色彩调整)": {
+        "HSL (色相/饱和度/明度)": ["HSL"]
+    },
+    "Color Grading (颜色分级)": {
+        "Color Grading (分级参数)": ["ColorGrading"]
+    },
+    "Detail (细节/降噪)": {
+        "Detail (锐化与降噪)": [
+            "Sharpness", "SharpenRadius", "SharpenDetail", "SharpenEdgeMasking",
+            "LuminanceSmoothing", "LuminanceNoiseReductionDetail", "LuminanceNoiseReductionContrast",
+            "ColorNoiseReduction", "ColorNoiseReductionDetail", "ColorNoiseReductionSmoothness"
+        ]
+    },
+    "Effects (效果)": {
+        "Vignette (暗角与裁剪后暗角)": ["PostCropVignetteAmount", "VignetteAmount"]
+    },
+    "Crop (几何与裁剪)": {
+        "Crop (裁剪比例与角度)": ["CropAngle", "CropLeft", "CropTop", "CropRight", "CropBottom", "HasCrop", "CropConstrainToWarp"]
+    },
+    "Metadata (评分与标记)": {
+        "Rating & Pick (星级与旗标)": ["Rating", "Pick"],
+        "Orientation (旋转)": ["Orientation"]
+    }
 }
 
 
@@ -730,7 +776,7 @@ def _is_signed_offset(value):
     return bool(re.match(r"^[+-]\d+(?:\.\d+)?$", str(value).strip()))
 
 
-def generate_xmp(image_info, crs_fields, raw_metadata=None, exif_data=None):
+def generate_xmp(image_info, crs_fields, raw_metadata=None, exif_data=None, selected_fields=None):
     NS = {
         "x": "adobe:ns:meta/",
         "rdf": "http://www.w3.org/1999/02/22-rdf-syntax-ns#",
@@ -785,20 +831,22 @@ def generate_xmp(image_info, crs_fields, raw_metadata=None, exif_data=None):
         desc.set(f"{{{NS['photoshop']}}}DateCreated", cd_no_tz)
         desc.set(f"{{{NS['exif']}}}DateTimeOriginal", cd_no_tz)
 
-    rating = crs_fields.pop("Rating", None)
-    if rating is not None:
-        desc.set(f"{{{NS['xmp']}}}Rating", str(rating))
-    elif "Rating" in exif:
-        rv = exif["Rating"]
-        rating = str(rv.get("value", "0")) if isinstance(rv, dict) else str(rv)
-        desc.set(f"{{{NS['xmp']}}}Rating", rating)
-    else:
-        desc.set(f"{{{NS['xmp']}}}Rating", "0")
+    if selected_fields is None or "Rating" in selected_fields:
+        rating = crs_fields.pop("Rating", None)
+        if rating is not None:
+            desc.set(f"{{{NS['xmp']}}}Rating", str(rating))
+        elif "Rating" in exif:
+            rv = exif["Rating"]
+            rating = str(rv.get("value", "0")) if isinstance(rv, dict) else str(rv)
+            desc.set(f"{{{NS['xmp']}}}Rating", rating)
+        else:
+            desc.set(f"{{{NS['xmp']}}}Rating", "0")
 
     # Pick flag (xmpDM:pick)
-    pick = crs_fields.pop("Pick", None)
-    if pick is not None:
-        desc.set(f"{{{NS['xmpDM']}}}pick", str(pick))
+    if selected_fields is None or "Pick" in selected_fields:
+        pick = crs_fields.pop("Pick", None)
+        if pick is not None:
+            desc.set(f"{{{NS['xmpDM']}}}pick", str(pick))
 
     for ns_key, ek in [
         (f"{{{NS['tiff']}}}Make", "Make"),
@@ -814,20 +862,22 @@ def generate_xmp(image_info, crs_fields, raw_metadata=None, exif_data=None):
 
     # ---- Orientation ----
     # Prefer raw-file EXIF orientation (sensor-native); fall back to PixCake rotation.
-    raw_orient = _parse_orientation_from_raw(raw_meta)
-    orientation = crs_fields.pop("Orientation", "1")
-    if raw_orient is not None and 1 <= raw_orient <= 8:
-        orientation = str(raw_orient)
-    elif (
-        orientation == "1"
-        and orig_w and orig_h and orig_h > orig_w
-        and raw_ext.upper() in RAW_EXTENSIONS
-        and (not raw_w or not raw_h or raw_w > raw_h)
-    ):
-        # PixCake stores display pixels as portrait, while RAW/XMP uses sensor order
-        # plus orientation. Canon CR3 portrait files commonly need Orientation=8.
-        orientation = "8"
-    desc.set(f"{{{NS['tiff']}}}Orientation", orientation)
+    orientation = "1"
+    if selected_fields is None or "Orientation" in selected_fields:
+        raw_orient = _parse_orientation_from_raw(raw_meta)
+        orientation = crs_fields.pop("Orientation", "1")
+        if raw_orient is not None and 1 <= raw_orient <= 8:
+            orientation = str(raw_orient)
+        elif (
+            orientation == "1"
+            and orig_w and orig_h and orig_h > orig_w
+            and raw_ext.upper() in RAW_EXTENSIONS
+            and (not raw_w or not raw_h or raw_w > raw_h)
+        ):
+            # PixCake stores display pixels as portrait, while RAW/XMP uses sensor order
+            # plus orientation. Canon CR3 portrait files commonly need Orientation=8.
+            orientation = "8"
+        desc.set(f"{{{NS['tiff']}}}Orientation", orientation)
 
     # ---- Dimensions ----
     # Use raw-file sensor dimensions when available; otherwise derive from PixCake data
@@ -927,7 +977,24 @@ def generate_xmp(image_info, crs_fields, raw_metadata=None, exif_data=None):
     }
     for field, value in defaults.items():
         if field not in crs_fields:
-            desc.set(f"{{{NS['crs']}}}{field}", value)
+            # Check if this default field is allowed by selected_fields
+            is_allowed = True
+            if selected_fields is not None:
+                if field == "WhiteBalance":
+                    is_allowed = "WhiteBalance" in selected_fields
+                elif field in ("AutoLateralCA", "LensProfileEnable"):
+                    is_allowed = "AutoLateralCA" in selected_fields or "LensProfileEnable" in selected_fields
+                elif field == "HDREditMode":
+                    is_allowed = "HDREditMode" in selected_fields
+                elif field == "CameraProfile":
+                    is_allowed = "CameraProfile" in selected_fields
+                elif field == "CurveRefineSaturation":
+                    is_allowed = "ToneCurvePV2012" in selected_fields
+                elif field in ("CropTop", "CropLeft", "CropBottom", "CropRight", "CropAngle", "CropConstrainToUnitSquare"):
+                    is_allowed = "CropAngle" in selected_fields or "CropLeft" in selected_fields
+            
+            if is_allowed:
+                desc.set(f"{{{NS['crs']}}}{field}", value)
 
     history = ET.SubElement(desc, f"{{{NS['xmpMM']}}}History")
     seq = ET.SubElement(history, f"{{{NS['rdf']}}}Seq")
@@ -944,14 +1011,15 @@ def generate_xmp(image_info, crs_fields, raw_metadata=None, exif_data=None):
         flash.set(f"{{{NS['exif']}}}{attr}", val)
 
     # Write each tone curve once, using custom PixCake points where present.
-    for suffix in ["", "Red", "Green", "Blue"]:
-        field_name = f"ToneCurvePV2012{suffix}"
-        points = curve_points.get(field_name, "0, 0;255, 255")
-        tc = ET.SubElement(desc, f"{{{NS['crs']}}}{field_name}")
-        tc_seq = ET.SubElement(tc, f"{{{NS['rdf']}}}Seq")
-        for pt in points.split(";"):
-            li = ET.SubElement(tc_seq, f"{{{NS['rdf']}}}li")
-            li.text = pt
+    if selected_fields is None or "ToneCurvePV2012" in selected_fields:
+        for suffix in ["", "Red", "Green", "Blue"]:
+            field_name = f"ToneCurvePV2012{suffix}"
+            points = curve_points.get(field_name, "0, 0;255, 255")
+            tc = ET.SubElement(desc, f"{{{NS['crs']}}}{field_name}")
+            tc_seq = ET.SubElement(tc, f"{{{NS['rdf']}}}Seq")
+            for pt in points.split(";"):
+                li = ET.SubElement(tc_seq, f"{{{NS['rdf']}}}li")
+                li.text = pt
 
     try:
         return _format_xmp_document(root, desc, NS)
@@ -1252,11 +1320,12 @@ class ConvertWorker(QObject):
     status = pyqtSignal(str)
     finished = pyqtSignal(int, int, list)
 
-    def __init__(self, selected_projects, output_dir, overwrite_mode="skip"):
+    def __init__(self, selected_projects, output_dir, overwrite_mode="skip", selected_fields=None):
         super().__init__()
         self.selected_projects = selected_projects
         self.output_dir = output_dir
         self.overwrite_mode = overwrite_mode  # "overwrite" | "skip"
+        self.selected_fields = selected_fields if selected_fields is not None else set()
 
     def run(self):
         db = PixCakeDB()
@@ -1409,8 +1478,36 @@ class ConvertWorker(QObject):
         if rotation is not None:
             mapped["Orientation"] = str(self._rotation_to_orientation(rotation))
 
+        # ---- Step 5: Filter mapped fields based on selected_fields ----
+        filtered_mapped = {}
+        for k, v in mapped.items():
+            is_allowed = False
+            
+            # 1. HSL
+            if k.startswith(("HueAdjustment", "SaturationAdjustment", "LuminanceAdjustment")):
+                if "HSL" in self.selected_fields:
+                    is_allowed = True
+            # 2. Color Grading
+            elif k.startswith("ColorGrade"):
+                if "ColorGrading" in self.selected_fields:
+                    is_allowed = True
+            # 3. Tone Curve points
+            elif k.endswith("__points"):
+                base_k = k[:-8]
+                if base_k in self.selected_fields:
+                    is_allowed = True
+            # 4. Standard fields
+            elif k in self.selected_fields:
+                is_allowed = True
+            # 5. Always allowed (standard non-configurable metadata or structural tags)
+            elif k in ("Version", "CompatibleVersion", "ProcessVersion", "RawFileName", "AlreadyApplied", "HasSettings", "AllowFilters"):
+                is_allowed = True
+                
+            if is_allowed:
+                filtered_mapped[k] = v
+
         raw_meta = read_raw_metadata(raw_path) if os.path.exists(raw_path) else None
-        xmp_content = generate_xmp(img, mapped, raw_meta, exif_data)
+        xmp_content = generate_xmp(img, filtered_mapped, raw_meta, exif_data, self.selected_fields)
 
         xmp_name = os.path.splitext(os.path.basename(raw_path))[0] + ".xmp"
         xmp_path = os.path.join(output_dir, xmp_name)
@@ -1458,6 +1555,270 @@ class ConvertWorker(QObject):
                     points.append(f"{round(ae[i])}, {round(ae[i+1])}")
                 mapped[f"{field}__points"] = ";".join(points)
                 mapped["ToneCurveName2012"] = "Custom"
+
+
+# ============================================================
+# Sync Settings Selector Widgets
+# ============================================================
+
+# ============================================================
+# Sync Settings Selector Widgets (Sidebar version)
+# ============================================================
+
+class CustomTreeWidget(QTreeWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setHeaderHidden(True)
+        self.setFocusPolicy(Qt.NoFocus)
+        self.setIndentation(18)
+        self.setObjectName("syncTree")
+        
+    def mousePressEvent(self, event):
+        item = self.itemAt(event.pos())
+        if item:
+            # If the user clicked to the right of the checkbox indicator, collapse/expand the parent item
+            indent = self.indentation()
+            level = 0
+            p = item.parent()
+            while p:
+                level += 1
+                p = p.parent()
+            
+            checkbox_right_edge = (level * indent) + 26
+            if event.pos().x() > checkbox_right_edge:
+                if item.childCount() > 0:
+                    item.setExpanded(not item.isExpanded())
+                    event.accept()
+                    return
+        super().mousePressEvent(event)
+
+
+class SyncSettingsSidebar(QFrame):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("syncSidebar")
+        self.setFixedWidth(280)
+        
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(12)
+        
+        # Title of the Sidebar
+        header_layout = QHBoxLayout()
+        header_layout.setContentsMargins(0, 0, 0, 0)
+        
+        title_label = QLabel("同步设置")
+        title_label.setStyleSheet("font-size: 14px; font-weight: 700; color: #FFFFFF;")
+        header_layout.addWidget(title_label)
+        
+        self.info_lbl = QLabel("全选")
+        self.info_lbl.setStyleSheet("font-size: 11px; color: #8E8E93;")
+        header_layout.addWidget(self.info_lbl, 0, Qt.AlignRight | Qt.AlignVCenter)
+        
+        layout.addLayout(header_layout)
+        
+        # CustomTreeWidget for hierarchical checkboxes
+        self.tree = CustomTreeWidget()
+        layout.addWidget(self.tree)
+        
+        # Apply style matching the general app QSS and rounded corners
+        self.setStyleSheet("""
+            QFrame#syncSidebar {
+                background-color: #1C1C1E;
+                border-left: 1px solid #2D2D2D;
+            }
+            QTreeWidget#syncTree {
+                background-color: transparent;
+                border: none;
+                color: #FFFFFF;
+                outline: none;
+            }
+            QTreeWidget#syncTree::item {
+                padding: 6px;
+                color: #F5F5F7;
+                margin-top: 1px;
+                margin-bottom: 1px;
+            }
+            QTreeWidget#syncTree::indicator {
+                width: 14px;
+                height: 14px;
+            }
+            QScrollBar:vertical {
+                background-color: transparent;
+                width: 6px;
+                margin: 2px;
+            }
+            QScrollBar::handle:vertical {
+                background-color: #3A3A3C;
+                border-radius: 3px;
+                min-height: 20px;
+            }
+            QScrollBar::handle:vertical:hover {
+                background-color: #48484A;
+            }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+                height: 0; width: 0;
+            }
+            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
+                background: transparent;
+            }
+        """)
+        
+        # Populate the tree
+        self._build_tree()
+        
+        self.tree.itemChanged.connect(self._on_item_changed)
+        
+    def _build_tree(self):
+        self.tree.blockSignals(True)
+        
+        # Top-level "全选所有" item
+        self.all_item = QTreeWidgetItem(self.tree)
+        self.all_item.setText(0, "全选所有")
+        self.all_item.setFlags(self.all_item.flags() | Qt.ItemIsUserCheckable)
+        self.all_item.setCheckState(0, Qt.Checked)
+        
+        # Add subtle color styling to "全选所有"
+        self.all_item.setBackground(0, QColor("#2A2A2D"))
+        self.all_item.setFont(0, QFont("", -1, QFont.Bold))
+        
+        for cat_name, options in SYNC_HIERARCHY.items():
+            cat_item = QTreeWidgetItem(self.tree)
+            cat_item.setText(0, cat_name)
+            cat_item.setFlags(cat_item.flags() | Qt.ItemIsUserCheckable)
+            cat_item.setCheckState(0, Qt.Checked)
+            
+            # Subtle background color for Level 1 categories
+            cat_item.setBackground(0, QColor("#242427"))
+            cat_item.setFont(0, QFont("", -1, QFont.DemiBold))
+            
+            for opt_name, fields in options.items():
+                opt_item = QTreeWidgetItem(cat_item)
+                opt_item.setText(0, opt_name)
+                opt_item.setFlags(opt_item.flags() | Qt.ItemIsUserCheckable)
+                opt_item.setCheckState(0, Qt.Checked)
+                opt_item.setData(0, Qt.UserRole, fields)
+                
+                # Subtle background/font color for Level 2 options (slightly darker, lighter text)
+                opt_item.setBackground(0, QColor("#1C1C1E"))
+                opt_item.setFont(0, QFont("", -1, QFont.Normal))
+                
+        self.tree.expandAll()
+        self.tree.blockSignals(False)
+        self.update_info_text()
+
+    def _on_item_changed(self, item, column):
+        self.tree.blockSignals(True)
+        try:
+            state = item.checkState(0)
+            
+            if item == self.all_item:
+                # Set all categories and children to match 'all_item'
+                for i in range(self.tree.topLevelItemCount()):
+                    cat_item = self.tree.topLevelItem(i)
+                    if cat_item == self.all_item:
+                        continue
+                    cat_item.setCheckState(0, state)
+                    for j in range(cat_item.childCount()):
+                        cat_item.child(j).setCheckState(0, state)
+            
+            elif item.parent() is None:
+                # It's a category item. Update all its children.
+                for j in range(item.childCount()):
+                    item.child(j).setCheckState(0, state)
+                # Update 'all_item'
+                self._recalculate_all_item_state()
+                
+            else:
+                # It's a child item. Update its parent category, then update 'all_item'
+                parent = item.parent()
+                self._recalculate_parent_state(parent)
+                self._recalculate_all_item_state()
+                
+        finally:
+            self.tree.blockSignals(False)
+            
+        self.update_info_text()
+
+    def _recalculate_parent_state(self, parent_item):
+        checked_count = 0
+        unchecked_count = 0
+        child_count = parent_item.childCount()
+        
+        for i in range(child_count):
+            state = parent_item.child(i).checkState(0)
+            if state == Qt.Checked:
+                checked_count += 1
+            elif state == Qt.Unchecked:
+                unchecked_count += 1
+                
+        if checked_count == child_count:
+            parent_item.setCheckState(0, Qt.Checked)
+        elif unchecked_count == child_count:
+            parent_item.setCheckState(0, Qt.Unchecked)
+        else:
+            parent_item.setCheckState(0, Qt.PartiallyChecked)
+
+    def _recalculate_all_item_state(self):
+        checked_count = 0
+        unchecked_count = 0
+        total_cats = self.tree.topLevelItemCount() - 1 # exclude all_item
+        
+        for i in range(self.tree.topLevelItemCount()):
+            cat_item = self.tree.topLevelItem(i)
+            if cat_item == self.all_item:
+                continue
+            state = cat_item.checkState(0)
+            if state == Qt.Checked:
+                checked_count += 1
+            elif state == Qt.Unchecked:
+                unchecked_count += 1
+                
+        if checked_count == total_cats:
+            self.all_item.setCheckState(0, Qt.Checked)
+        elif unchecked_count == total_cats:
+            self.all_item.setCheckState(0, Qt.Unchecked)
+        else:
+            self.all_item.setCheckState(0, Qt.PartiallyChecked)
+
+    def update_info_text(self):
+        checked_count = 0
+        total_count = 0
+        
+        for i in range(self.tree.topLevelItemCount()):
+            cat_item = self.tree.topLevelItem(i)
+            if cat_item == self.all_item:
+                continue
+            for j in range(cat_item.childCount()):
+                total_count += 1
+                if cat_item.child(j).checkState(0) == Qt.Checked:
+                    checked_count += 1
+                    
+        if checked_count == total_count:
+            self.info_lbl.setText("全选")
+        elif checked_count == 0:
+            self.info_lbl.setText("未选择")
+        else:
+            self.info_lbl.setText(f"已选 {checked_count}/{total_count}")
+
+    def get_selected_fields(self):
+        selected = set()
+        for i in range(self.tree.topLevelItemCount()):
+            cat_item = self.tree.topLevelItem(i)
+            if cat_item == self.all_item:
+                continue
+            for j in range(cat_item.childCount()):
+                opt_item = cat_item.child(j)
+                if opt_item.checkState(0) == Qt.Checked:
+                    fields = opt_item.data(0, Qt.UserRole)
+                    if fields:
+                        selected.update(fields)
+        return selected
+
+
+# ============================================================
+# Project Card Widget
+# ============================================================
 
 
 # ============================================================
@@ -1727,6 +2088,11 @@ class MainWindow(QMainWindow):
 
         main_layout.addWidget(toolbar)
 
+        # ---- Main Body Horizontal Layout (Left: Cards Grid, Right: Sync Settings Sidebar) ----
+        body_layout = QHBoxLayout()
+        body_layout.setContentsMargins(0, 0, 0, 0)
+        body_layout.setSpacing(0)
+
         # ---- Card Grid (Scroll Area) ----
         self.scroll_area = QScrollArea()
         self.scroll_area.setWidgetResizable(True)
@@ -1748,7 +2114,13 @@ class MainWindow(QMainWindow):
         container_layout.addStretch()
 
         self.scroll_area.setWidget(self.card_container)
-        main_layout.addWidget(self.scroll_area, 1)
+        body_layout.addWidget(self.scroll_area, 1)
+
+        # ---- Sync Settings Sidebar ----
+        self.sync_sidebar = SyncSettingsSidebar()
+        body_layout.addWidget(self.sync_sidebar)
+
+        main_layout.addLayout(body_layout, 1)
 
         # ---- Bottom Bar ----
         bottom = QWidget()
@@ -2037,7 +2409,8 @@ class MainWindow(QMainWindow):
         self.convert_btn.setEnabled(False)
         self.status_bar.showMessage("转换中...")
 
-        self._cvt_worker = ConvertWorker(selected_metas, output_dir, overwrite_mode)
+        selected_fields = self.sync_sidebar.get_selected_fields()
+        self._cvt_worker = ConvertWorker(selected_metas, output_dir, overwrite_mode, selected_fields)
         self._cvt_thread = QThread()
         self._cvt_worker.moveToThread(self._cvt_thread)
         self._cvt_thread.started.connect(self._cvt_worker.run)
