@@ -27,6 +27,7 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtCore import (
     Qt, QThread, pyqtSignal, QObject, QTimer, QSize, QPoint, QRect,
+    QSettings,
 )
 from PyQt5.QtGui import (
     QPixmap,
@@ -37,11 +38,21 @@ from PyQt5.QtGui import (
 # Configuration
 # ============================================================
 
-PIXCAKE_BASE = os.path.expandvars(r"%APPDATA%\PixCake-qt_pro")
+def default_pixcake_base():
+    appdata = os.environ.get("APPDATA")
+    if appdata:
+        return os.path.join(appdata, "PixCake-qt_pro")
+    return os.path.join(str(Path.home()), "AppData", "Roaming", "PixCake-qt_pro")
+
+
+PIXCAKE_BASE = default_pixcake_base()
 DB_DIR = os.path.join(PIXCAKE_BASE, "db")
 PROJECT_DIR = os.path.join(PIXCAKE_BASE, "project")
 CST = timezone(timedelta(hours=8))
 APP_TITLE = "PixCake → Lightroom XMP"
+SETTINGS_ORG = "PixCakeXmpConverter"
+SETTINGS_APP = "PixCakeXmpConverter"
+SETTINGS_PIXCAKE_BASE_KEY = "pixcake/base_path"
 
 CARD_W = 220
 CARD_H = 210
@@ -1291,6 +1302,36 @@ QPushButton#btnSecondary:pressed {
     background-color: #48484A;
 }
 
+QPushButton#btnSoftwarePath {
+    background-color: #2C2C2E;
+    color: #FFFFFF;
+    border: 1px solid #3A3A3C;
+    font-weight: 500;
+}
+QPushButton#btnSoftwarePath:hover {
+    background-color: #3A3A3C;
+    border-color: #48484A;
+}
+QPushButton#btnSoftwarePath:pressed {
+    background-color: #48484A;
+}
+QPushButton#btnSoftwarePath[pathValid="true"] {
+    background-color: #2D3A33;
+    border-color: #496B55;
+}
+QPushButton#btnSoftwarePath[pathValid="true"]:hover {
+    background-color: #35483C;
+    border-color: #5D8068;
+}
+QPushButton#btnSoftwarePath[pathValid="false"] {
+    background-color: #3A2D2D;
+    border-color: #6B4949;
+}
+QPushButton#btnSoftwarePath[pathValid="false"]:hover {
+    background-color: #483535;
+    border-color: #805D5D;
+}
+
 QPushButton#btnGhost {
     background-color: transparent;
     color: #AEAEB2;
@@ -1449,15 +1490,17 @@ class ConvertWorker(QObject):
     status = pyqtSignal(str)
     finished = pyqtSignal(int, int, list)
 
-    def __init__(self, selected_projects, output_dir, overwrite_mode="skip", selected_fields=None):
+    def __init__(self, selected_projects, output_dir, overwrite_mode="skip",
+                 selected_fields=None, base_path=PIXCAKE_BASE):
         super().__init__()
         self.selected_projects = selected_projects
         self.output_dir = output_dir
         self.overwrite_mode = overwrite_mode  # "overwrite" | "skip"
         self.selected_fields = selected_fields if selected_fields is not None else set()
+        self.base_path = base_path
 
     def run(self):
-        db = PixCakeDB()
+        db = PixCakeDB(self.base_path)
         success, skipped, errors = 0, 0, []
 
         # Flatten all images
@@ -2288,7 +2331,10 @@ class MainWindow(QMainWindow):
         self.setAttribute(Qt.WA_TranslucentBackground,
                           False)
 
-        self.db = PixCakeDB()
+        self.settings = QSettings(SETTINGS_ORG, SETTINGS_APP)
+        saved_base_path = self.settings.value(
+            SETTINGS_PIXCAKE_BASE_KEY, PIXCAKE_BASE, type=str)
+        self.db = PixCakeDB(self._normalize_pixcake_base(saved_base_path))
         self.all_projects = []
         self.cards = []
         self.selected_cards = set()
@@ -2319,6 +2365,11 @@ class MainWindow(QMainWindow):
         tb_layout = QHBoxLayout(toolbar)
         tb_layout.setContentsMargins(16, 12, 16, 12)
         tb_layout.setSpacing(12)
+
+        self.software_path_btn = QPushButton("软件路径")
+        self.software_path_btn.setObjectName("btnSoftwarePath")
+        self.software_path_btn.clicked.connect(self._browse_software_path)
+        tb_layout.addWidget(self.software_path_btn)
 
         # User selector
         user_label = QLabel("用户")
@@ -2428,9 +2479,50 @@ class MainWindow(QMainWindow):
         self.status_bar = QStatusBar()
         self.status_bar.showMessage("就绪 — 正在加载项目...")
         main_layout.addWidget(self.status_bar)
+        self._update_software_path_button()
 
     def _apply_qss(self):
         self.setStyleSheet(QSS)
+
+    def _normalize_pixcake_base(self, path):
+        path = os.path.expandvars(os.path.expanduser(path or PIXCAKE_BASE))
+        path = os.path.normpath(path)
+        if (os.path.basename(path).lower() == "db"
+                and os.path.isfile(os.path.join(path, "base.db"))):
+            return os.path.dirname(path)
+        if os.path.basename(path).lower() == "project":
+            return os.path.dirname(path)
+        nested = os.path.join(path, "PixCake-qt_pro")
+        if (os.path.isdir(nested)
+                and not os.path.isdir(os.path.join(path, "db"))):
+            return nested
+        return path
+
+    def _is_software_path_readable(self):
+        return os.path.isfile(os.path.join(self.db.base_path, "db", "base.db"))
+
+    def _update_software_path_button(self):
+        valid = self._is_software_path_readable()
+        self.software_path_btn.setProperty(
+            "pathValid", "true" if valid else "false")
+        self.software_path_btn.setToolTip(
+            f"{'已读取到 PixCake 数据' if valid else '未读取到 PixCake 数据'}\n"
+            f"{self.db.base_path}")
+        self.software_path_btn.style().unpolish(self.software_path_btn)
+        self.software_path_btn.style().polish(self.software_path_btn)
+
+    def _browse_software_path(self):
+        folder = QFileDialog.getExistingDirectory(
+            self, "选择 PixCake 软件数据文件夹", self.db.base_path)
+        if not folder:
+            return
+
+        base_path = self._normalize_pixcake_base(folder)
+        self.db = PixCakeDB(base_path)
+        self.settings.setValue(SETTINGS_PIXCAKE_BASE_KEY, base_path)
+        self.all_projects = []
+        self._update_software_path_button()
+        self._load_projects()
 
     # ============================================================
     # Data
@@ -2438,6 +2530,7 @@ class MainWindow(QMainWindow):
 
     def _load_projects(self):
         """Load projects synchronously (fast, just DB reads). Threads only for conversion."""
+        self._update_software_path_button()
         self.status_bar.showMessage("正在加载项目...")
         self.convert_btn.setEnabled(False)
         QApplication.processEvents()
@@ -2469,13 +2562,14 @@ class MainWindow(QMainWindow):
         self.user_combo.setCurrentIndex(0)
         self.user_combo.blockSignals(False)
 
-        self.convert_btn.setEnabled(True)
+        self.convert_btn.setEnabled(bool(user_ids))
 
         if user_ids:
             self._filter_projects(user_ids[0])
             self.status_bar.showMessage(
                 f"已加载 {len(projects)} 个项目 — 点击卡片选择项目，然后设置输出路径并转换")
         else:
+            self._show_cards([])
             self.status_bar.showMessage("未找到 PixCake 数据")
 
     def _on_user_changed(self, idx):
@@ -2689,7 +2783,9 @@ class MainWindow(QMainWindow):
         self.status_bar.showMessage("转换中...")
 
         selected_fields = self.sync_sidebar.get_selected_fields()
-        self._cvt_worker = ConvertWorker(selected_metas, output_dir, overwrite_mode, selected_fields)
+        self._cvt_worker = ConvertWorker(
+            selected_metas, output_dir, overwrite_mode, selected_fields,
+            self.db.base_path)
         self._cvt_thread = QThread()
         self._cvt_worker.moveToThread(self._cvt_thread)
         self._cvt_thread.started.connect(self._cvt_worker.run)
