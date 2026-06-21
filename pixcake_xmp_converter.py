@@ -12,6 +12,7 @@ import sqlite3
 import re
 import uuid
 import threading
+import time
 import xml.etree.ElementTree as ET
 from xml.sax.saxutils import escape, quoteattr
 from datetime import datetime, timezone, timedelta
@@ -2338,6 +2339,12 @@ class MainWindow(QMainWindow):
         self.all_projects = []
         self.cards = []
         self.selected_cards = set()
+        self._grid_metrics_cache = None
+        self._last_relayout_ts = 0.0
+        self._relayout_interval_ms = 16
+        self._relayout_timer = QTimer(self)
+        self._relayout_timer.setSingleShot(True)
+        self._relayout_timer.timeout.connect(self._relayout_cards)
 
         self._build_ui()
         self._apply_qss()
@@ -2599,27 +2606,21 @@ class MainWindow(QMainWindow):
         return cols, max(1, card_w)
 
     def _show_cards(self, projects):
-        # Clear existing cards
-        for card in self.cards:
-            card.setParent(None)
-            card.deleteLater()
+        self._relayout_timer.stop()
+
+        # Clear grid items before dropping card references. Hiding widgets first
+        # prevents detached children from briefly appearing as top-level windows.
+        self._clear_card_grid(delete_cards=True)
         self.cards.clear()
         self.selected_cards.clear()
-
-        # Clear grid (keep spacers too)
-        grid = self._card_grid
-        while grid.count():
-            item = grid.takeAt(0)
-            w = item.widget()
-            if w:
-                w.setParent(None)
-                w.deleteLater()
+        self._grid_metrics_cache = None
 
         if not projects:
             self.info_label.setText("没有项目")
             return
 
         cols, card_w = self._grid_metrics()
+        grid = self._card_grid
 
         for i, meta in enumerate(projects):
             card = ProjectCard(meta)
@@ -2633,54 +2634,91 @@ class MainWindow(QMainWindow):
         last_row_cols = len(projects) % cols
         if last_row_cols > 0:
             for j in range(cols - last_row_cols):
-                spacer = QWidget()
-                spacer.setFixedSize(card_w, CARD_H)
-                grid.addWidget(spacer, len(projects) // cols, last_row_cols + j)
+                self._add_card_spacer(
+                    len(projects) // cols, last_row_cols + j, card_w)
 
         # Keep columns at card width so thumbnail frames do not drift in wider rows.
         for c in range(grid.columnCount()):
             grid.setColumnStretch(c, 0)
         grid.invalidate()
+        self._grid_metrics_cache = (cols, card_w)
 
         self.info_label.setText(f"共 {len(projects)} 个项目")
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        if self.cards:
+        if getattr(self, "cards", None) and hasattr(self, "_relayout_timer"):
+            self._request_relayout()
+
+    def _request_relayout(self):
+        now = time.monotonic()
+        elapsed_ms = (now - self._last_relayout_ts) * 1000.0
+        if elapsed_ms >= self._relayout_interval_ms:
+            self._relayout_timer.stop()
             self._relayout_cards()
+            return
+
+        remaining_ms = max(1, int(self._relayout_interval_ms - elapsed_ms))
+        if not self._relayout_timer.isActive():
+            self._relayout_timer.start(remaining_ms)
+
+    def _clear_card_grid(self, delete_cards=False):
+        grid = self._card_grid
+        while grid.count():
+            item = grid.takeAt(0)
+            w = item.widget()
+            if not w:
+                continue
+            if not delete_cards and w in self.cards:
+                continue
+            w.hide()
+            w.setParent(None)
+            w.deleteLater()
+
+    def _add_card_spacer(self, row, col, card_w):
+        self._card_grid.addItem(
+            QSpacerItem(card_w, CARD_H, QSizePolicy.Fixed, QSizePolicy.Fixed),
+            row,
+            col,
+        )
 
     def _relayout_cards(self):
         if not self.cards:
             return
+        self._last_relayout_ts = time.monotonic()
         grid = self._card_grid
         cols, card_w = self._grid_metrics()
+        if self._grid_metrics_cache == (cols, card_w):
+            return
 
-        # Remove all items from grid (preserve card widgets, destroy spacers)
-        while grid.count():
-            item = grid.takeAt(0)
-            w = item.widget()
-            if w and w not in self.cards:
-                w.setParent(None)
-                w.deleteLater()
+        self.card_container.setUpdatesEnabled(False)
+        self.scroll_area.viewport().setUpdatesEnabled(False)
+        try:
+            # Remove all items from grid while preserving card widgets.
+            self._clear_card_grid(delete_cards=False)
 
-        # Re-add cards with new column count
-        for i, card in enumerate(self.cards):
-            card.set_card_width(card_w)
-            row, col = divmod(i, cols)
-            grid.addWidget(card, row, col, Qt.AlignTop | Qt.AlignLeft)
+            # Re-add cards with new column count.
+            for i, card in enumerate(self.cards):
+                card.set_card_width(card_w)
+                row, col = divmod(i, cols)
+                grid.addWidget(card, row, col, Qt.AlignTop | Qt.AlignLeft)
 
-        # Fill last row
-        last_row_cols = len(self.cards) % cols
-        if last_row_cols > 0:
-            for j in range(cols - last_row_cols):
-                spacer = QWidget()
-                spacer.setFixedSize(card_w, CARD_H)
-                grid.addWidget(spacer, len(self.cards) // cols, last_row_cols + j)
+            # Fill last row with layout spacers instead of widgets. Detached
+            # QWidget spacers can flash as small white windows during resize.
+            last_row_cols = len(self.cards) % cols
+            if last_row_cols > 0:
+                for j in range(cols - last_row_cols):
+                    self._add_card_spacer(
+                        len(self.cards) // cols, last_row_cols + j, card_w)
 
-        # Keep columns at card width so thumbnail frames do not drift in wider rows.
-        for c in range(grid.columnCount()):
-            grid.setColumnStretch(c, 0)
-        grid.invalidate()
+            # Keep columns at card width so thumbnail frames do not drift in wider rows.
+            for c in range(grid.columnCount()):
+                grid.setColumnStretch(c, 0)
+            grid.invalidate()
+            self._grid_metrics_cache = (cols, card_w)
+        finally:
+            self.scroll_area.viewport().setUpdatesEnabled(True)
+            self.card_container.setUpdatesEnabled(True)
 
     # ============================================================
     # Selection

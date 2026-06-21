@@ -8,3 +8,5 @@ build/
 venv/
 .env
 *.xmp
+.claude/settings.local.json
+_debug_check.py
