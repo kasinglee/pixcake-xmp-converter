@@ -163,6 +163,8 @@ def map_pixcake_to_xmp(palette_params, preset_params):
 
     def add_params(params_list):
         for item in (params_list or []):
+            if not isinstance(item, dict):
+                continue
             pf = item.get("pf")
             if pf is not None:
                 all_params[pf] = {"fe": item.get("fe"), "se": item.get("se")}
@@ -370,7 +372,8 @@ class PixCakeDB:
             return None
         try:
             with open(file_path, "r", encoding="utf-8") as f:
-                return json.load(f)
+                result = json.load(f)
+                return result if isinstance(result, dict) else None
         except (json.JSONDecodeError, FileNotFoundError):
             return None
 
@@ -889,10 +892,11 @@ class ConvertWorker(QObject):
     status = pyqtSignal(str)
     finished = pyqtSignal(int, int, list)
 
-    def __init__(self, selected_projects, output_dir):
+    def __init__(self, selected_projects, output_dir, overwrite_mode="skip"):
         super().__init__()
         self.selected_projects = selected_projects
         self.output_dir = output_dir
+        self.overwrite_mode = overwrite_mode  # "overwrite" | "skip"
 
     def run(self):
         db = PixCakeDB()
@@ -942,9 +946,13 @@ class ConvertWorker(QObject):
         ext = db.get_ext_info(uid, pid, img.get("uuidKey", ""))
         base_temp = None
         base_tint = None
-        if ext:
-            ei = ext.get("extendInfo", {}).get("exifInfo", {})
+        if isinstance(ext, dict):
+            ei = ext.get("extendInfo", {})
+            if not isinstance(ei, dict):
+                ei = {}
             wbt = ei.get("WBT", {})
+            if not isinstance(wbt, dict):
+                wbt = {}
             if wbt.get("AsShot_CCT"):
                 mapped["WhiteBalance"] = "As Shot"
                 base_temp = int(wbt["AsShot_CCT"])
@@ -954,15 +962,20 @@ class ConvertWorker(QObject):
         # ---- Step 2: Process palette params (basic, HSL, color grading, curves, crop) ----
         if palette_path:
             palette_data = db.get_palette_params(palette_path)
-            if palette_data:
+            if isinstance(palette_data, dict):
                 # Common.Params — basic + HSL
-                common_params = palette_data.get("Common", {}).get("Params", [])
-                mapped.update(map_pixcake_to_xmp(common_params, None))
+                common = palette_data.get("Common", {})
+                if isinstance(common, dict):
+                    common_params = common.get("Params", [])
+                    mapped.update(map_pixcake_to_xmp(common_params, None))
 
                 # Local[].StrParams — color grading, curves, etc.
                 for local in palette_data.get("Local", []):
+                    if not isinstance(local, dict):
+                        continue
                     str_params = local.get("StrParams", [])
-                    mapped.update(map_pixcake_to_xmp(str_params, None))
+                    if isinstance(str_params, list):
+                        mapped.update(map_pixcake_to_xmp(str_params, None))
 
                 # Crop / geometry from Common.Crop or palette root
                 crop = palette_data.get("Common", {}).get("Crop", {}) or palette_data.get("Crop", {})
@@ -1028,7 +1041,7 @@ class ConvertWorker(QObject):
         xmp_name = os.path.splitext(os.path.basename(raw_path))[0] + ".xmp"
         xmp_path = os.path.join(output_dir, xmp_name)
 
-        if os.path.exists(xmp_path):
+        if os.path.exists(xmp_path) and self.overwrite_mode != "overwrite":
             return "skip"
 
         with open(xmp_path, "w", encoding="utf-8") as f:
@@ -1579,13 +1592,52 @@ class MainWindow(QMainWindow):
 
         selected_metas = [card.meta for card in self.selected_cards]
 
+        # ---- Pre-scan for existing XMP files ----
+        overwrite_mode = "skip"  # default: skip existing
+        existing_files = []
+        db = self.db
+        for meta in selected_metas:
+            imgs = db.get_project_images(meta["user_id"], meta["project_id"])
+            for img in imgs:
+                raw_path = img.get("originalImagePath", "")
+                if not raw_path:
+                    continue
+                xmp_name = os.path.splitext(os.path.basename(raw_path))[0] + ".xmp"
+                xmp_path = os.path.join(output_dir, xmp_name)
+                if os.path.exists(xmp_path):
+                    existing_files.append(xmp_name)
+
+        if existing_files:
+            existing_files.sort()
+            preview = "\n".join(f"  • {f}" for f in existing_files[:10])
+            if len(existing_files) > 10:
+                preview += f"\n  ...及其他 {len(existing_files) - 10} 个文件"
+
+            msgbox = QMessageBox(self)
+            msgbox.setWindowTitle("文件已存在")
+            msgbox.setText(
+                f"发现 {len(existing_files)} 个 XMP 文件已存在：\n\n{preview}\n\n如何处理？")
+            msgbox.setIcon(QMessageBox.Question)
+            overwrite_btn = msgbox.addButton("覆盖全部", QMessageBox.YesRole)
+            skip_btn = msgbox.addButton("跳过已存在", QMessageBox.NoRole)
+            cancel_btn = msgbox.addButton("取消", QMessageBox.RejectRole)
+            msgbox.setDefaultButton(skip_btn)
+            msgbox.exec()
+            clicked = msgbox.clickedButton()
+
+            if clicked == cancel_btn:
+                return
+            elif clicked == overwrite_btn:
+                overwrite_mode = "overwrite"
+            # else: keep "skip"
+
         self.progress.setVisible(True)
         self.progress.setMaximum(len(selected_metas))  # placeholder, updated by worker
         self.progress.setValue(0)
         self.convert_btn.setEnabled(False)
         self.status_bar.showMessage("转换中...")
 
-        self._cvt_worker = ConvertWorker(selected_metas, output_dir)
+        self._cvt_worker = ConvertWorker(selected_metas, output_dir, overwrite_mode)
         self._cvt_thread = QThread()
         self._cvt_worker.moveToThread(self._cvt_thread)
         self._cvt_thread.started.connect(self._cvt_worker.run)
