@@ -68,45 +68,92 @@ def format_dt(dt, fmt="%Y-%m-%d %H:%M"):
 # ============================================================
 
 PIXCAKE_TO_XMP_BASIC = {
-    3000:   ("crs", "Exposure2012",         5.0),
-    21001:  ("crs", "Contrast2012",         -25.0),
-    3003:   ("crs", "Highlights2012",       40.0),
-    44799:  ("crs", "Shadows2012",          48.0),
-    3002:   ("crs", "Whites2012",           240.0),
-    3004:   ("crs", "Blacks2012",           370.0),
-    3020:   ("crs", "Texture",              150.0),
-    3021:   ("crs", "Clarity2012",          200.0),
-    3022:   ("crs", "Dehaze",               200.0),
-    90152:  ("crs", "Vibrance",             250.0),
-    90014:  ("crs", "Saturation",           200.0),
-    3006:   ("crs", "Sharpness",            82.0, "absolute"),
-    91005:  ("crs", "LuminanceSmoothing",   280.0),
-    91003:  ("crs", "ColorNoiseReduction",  -47.0),
-    201:    ("crs", "PostCropVignetteAmount", 100.0),
-    90118:  ("crs", "VignetteAmount",         100.0),
+    # --- Basic Tone ---
+    3000:   ("crs", "Exposure2012",         5.0),      # 曝光
+    3002:   ("crs", "Contrast2012",         100.0),     # 对比度
+    3003:   ("crs", "Highlights2012",       40.0),      # 高光
+    3004:   ("crs", "Shadows2012",          200.0),     # 阴影
+    3020:   ("crs", "Whites2012",           275.0),     # 白色
+    3021:   ("crs", "Blacks2012",           650.0),     # 黑色
+    # --- Presence ---
+    3006:   ("crs", "Saturation",           180.0),     # 饱和度
+    90014:  ("crs", "Vibrance",             111.0),     # 自然饱和度
+    3022:   ("crs", "Clarity2012",          73.0),      # 清晰度
+    44799:  ("crs", "Dehaze",               76.0),      # 去朦胧
+    # --- Detail ---
+    90152:  ("crs", "Sharpness",            150.0),     # 锐化
+    90153:  ("crs", "SharpenRadius",        3.0, "absolute"),   # 锐化半径
+    90154:  ("crs", "SharpenDetail",        100.0),     # 锐化细节
+    90155:  ("crs", "SharpenEdgeMasking",   100.0),     # 锐化蒙版
+    91005:  ("crs", "LuminanceSmoothing",   200.0),     # 降噪-明亮度
+    91006:  ("crs", "LuminanceNoiseReductionDetail",   100.0),   # 降噪-明亮度细节
+    91007:  ("crs", "LuminanceNoiseReductionContrast", 100.0),   # 降噪-明亮度对比
+    91003:  ("crs", "ColorNoiseReduction",  100.0),     # 降噪-颜色
+    91004:  ("crs", "ColorNoiseReductionDetail",       100.0),   # 降噪-颜色细节
+    91008:  ("crs", "ColorNoiseReductionSmoothness",   100.0),   # 降噪-颜色平滑度
+    # --- Texture ---
+    21001:  ("crs", "Texture",              150.0),     # 纹理
+    # --- White Balance ---
+    3007:   ("crs", "Temperature",           4000.0),    # 色温 (offset, 需叠加 ext info AsShot_CCT)
+    3008:   ("crs", "Tint",                  300.0),     # 色调 (offset, 需叠加 ext info AsShot_Tint)
+    # --- Effects ---
+    201:    ("crs", "PostCropVignetteAmount", 100.0),   # 裁剪后暗角
+    90118:  ("crs", "VignetteAmount",         100.0),   # 暗角
 }
 
 HSL_PARAMS = {
-    "hue":        [91170, 91171, 91172, 91173, 91174, 91175, 91176, 91177],
-    "saturation": [91178, 91179, 91180, 91181, 91182, 91183, 91184, 91185],
-    "luminance":  [91186, 91187, 91188, 91189, 91190, 91191, 91192, 91193],
+    # pf: (color, channel) — channel: "Hue"|"Saturation"|"Luminance"
+    91170: ("Red",     "Hue"),
+    91171: ("Red",     "Saturation"),
+    91172: ("Red",     "Luminance"),
+    91173: ("Orange",  "Hue"),
+    91174: ("Orange",  "Saturation"),
+    91175: ("Orange",  "Luminance"),
+    91176: ("Yellow",  "Hue"),
+    91177: ("Yellow",  "Saturation"),
+    91178: ("Yellow",  "Luminance"),
+    91179: ("Green",   "Hue"),
+    91180: ("Green",   "Saturation"),
+    91181: ("Green",   "Luminance"),
+    91182: ("Aqua",    "Hue"),
+    91183: ("Aqua",    "Saturation"),
+    91184: ("Aqua",    "Luminance"),
+    91185: ("Blue",    "Hue"),
+    91186: ("Blue",    "Saturation"),
+    91187: ("Blue",    "Luminance"),
+    91188: ("Purple",  "Hue"),
+    91189: ("Purple",  "Saturation"),
+    91190: ("Purple",  "Luminance"),
+    91191: ("Magenta", "Hue"),
+    91192: ("Magenta", "Saturation"),
+    91193: ("Magenta", "Luminance"),
 }
 HSL_COLORS = ["Red", "Orange", "Yellow", "Green",
               "Aqua", "Blue", "Purple", "Magenta"]
 
 COLOR_GRADE_PARAMS = {
-    130: ("crs", "SplitToningShadowHue",          360.0),
-    131: ("crs", "SplitToningShadowSaturation",   100.0),
-    132: ("crs", "SplitToningHighlightHue",       360.0),
-    133: ("crs", "SplitToningHighlightSaturation", 100.0),
-    134: ("crs", "SplitToningBalance",            100.0),
+    # Color Grading (Lightroom 11+ style)
+    130: ("crs", "ColorGradeShadowHue",          360.0),
+    131: ("crs", "ColorGradeShadowSat",          100.0),
+    132: ("crs", "ColorGradeHighlightHue",       360.0),
+    133: ("crs", "ColorGradeHighlightSat",       100.0),
+    134: ("crs", "ColorGradeBlending",           100.0),
+    135: ("crs", "ColorGradeMidtoneHue",         360.0),
+    136: ("crs", "ColorGradeMidtoneSat",         100.0),
+    137: ("crs", "ColorGradeGlobalHue",          360.0),
+    138: ("crs", "ColorGradeGlobalSat",          100.0),
+    139: ("crs", "ColorGradeShadowLum",          100.0),
+    140: ("crs", "ColorGradeMidtoneLum",         100.0),
+    141: ("crs", "ColorGradeHighlightLum",       100.0),
+    142: ("crs", "ColorGradeGlobalLum",          100.0),
 }
 
 UNSIGNED_FIELDS = {
     "Sharpness", "LuminanceSmoothing", "ColorNoiseReduction",
-    "LuminanceNoiseReductionDetail", "ColorNoiseReductionDetail",
-    "ColorNoiseReductionSmoothness", "SharpenRadius",
-    "SharpenDetail", "SharpenEdgeMasking",
+    "LuminanceNoiseReductionDetail", "LuminanceNoiseReductionContrast",
+    "ColorNoiseReductionDetail", "ColorNoiseReductionSmoothness",
+    "SharpenRadius", "SharpenDetail", "SharpenEdgeMasking",
+    "Texture", "PostCropVignetteAmount", "VignetteAmount",
 }
 
 
@@ -131,6 +178,9 @@ def map_pixcake_to_xmp(palette_params, preset_params):
             fe = entry["fe"]
             if fe is not None:
                 value = fe * scale if mode == "absolute" else (fe - 0.5) * scale
+                # Skip if value rounds to 0 (no adjustment)
+                if abs(value) < 0.005:
+                    continue
                 if field in UNSIGNED_FIELDS:
                     crs_fields[field] = str(round(value))
                 elif field == "Exposure2012" or abs(scale) < 20:
@@ -138,24 +188,26 @@ def map_pixcake_to_xmp(palette_params, preset_params):
                 else:
                     crs_fields[field] = f"{round(value):+d}"
 
-        for hsl_type, pf_list in HSL_PARAMS.items():
-            if pf_id in pf_list:
-                idx = pf_list.index(pf_id)
-                color = HSL_COLORS[idx]
-                fe = entry["fe"]
-                if fe is not None:
-                    if hsl_type == "hue":
-                        val = int((fe - 0.5) * 360)
-                    else:
-                        val = int((fe - 0.5) * 200)
-                    crs_fields[f"{hsl_type.capitalize()}Adjustment{color}"] = \
-                        f"{val:+d}"
+        if pf_id in HSL_PARAMS:
+            color, channel = HSL_PARAMS[pf_id]
+            fe = entry["fe"]
+            if fe is not None:
+                if channel == "Hue":
+                    val = int((fe - 0.5) * 150)
+                elif channel == "Saturation":
+                    val = int((fe - 0.5) * 200)
+                else:  # Luminance
+                    val = int((fe - 0.5) * 240)
+                if val != 0:
+                    crs_fields[f"{channel}Adjustment{color}"] = f"{val:+d}"
 
         if pf_id in COLOR_GRADE_PARAMS:
             field, scale = COLOR_GRADE_PARAMS[pf_id][1], COLOR_GRADE_PARAMS[pf_id][2]
             fe = entry["fe"]
             if fe is not None:
-                crs_fields[field] = str(int((fe - 0.5) * scale))
+                val = int((fe - 0.5) * scale)
+                if val != 0:
+                    crs_fields[field] = str(val)
 
     return crs_fields
 
@@ -270,7 +322,8 @@ class PixCakeDB:
                        captureTime, created_time, update_time, presetId,
                        rotation, originalWidth, originalHeight, exifInfo,
                        isFavourite, inRecycleBin, fileSize,
-                       currentOptRecordId, lastOptRecordId, uuidKey
+                       currentOptRecordId, lastOptRecordId, uuidKey,
+                       starLevel, selectFlag
                 FROM thumbnail WHERE inRecycleBin = 0
                 ORDER BY captureTime DESC, created_time DESC
             """).fetchall()
@@ -445,11 +498,20 @@ def generate_xmp(image_info, crs_fields, raw_metadata=None, exif_data=None):
         desc.set(f"{{{NS['photoshop']}}}DateCreated", cd)
         desc.set(f"{{{NS['exif']}}}DateTimeOriginal", cd)
 
-    rating = "0"
-    if "Rating" in exif:
+    rating = crs_fields.pop("Rating", None)
+    if rating is not None:
+        desc.set(f"{{{NS['xmp']}}}Rating", str(rating))
+    elif "Rating" in exif:
         rv = exif["Rating"]
         rating = str(rv.get("value", "0")) if isinstance(rv, dict) else str(rv)
-    desc.set(f"{{{NS['xmp']}}}Rating", rating)
+        desc.set(f"{{{NS['xmp']}}}Rating", rating)
+    else:
+        desc.set(f"{{{NS['xmp']}}}Rating", "0")
+
+    # Pick flag (xmpDM:pick)
+    pick = crs_fields.pop("Pick", None)
+    if pick is not None:
+        desc.set(f"{{{NS['xmpDM']}}}pick", str(pick))
 
     for ns_key, ek in [
         (f"{{{NS['tiff']}}}Make", "Make"),
@@ -458,7 +520,8 @@ def generate_xmp(image_info, crs_fields, raw_metadata=None, exif_data=None):
         v = get_val(ek)
         if v:
             desc.set(ns_key, v)
-    desc.set(f"{{{NS['tiff']}}}Orientation", "1")
+    orientation = crs_fields.pop("Orientation", "1")
+    desc.set(f"{{{NS['tiff']}}}Orientation", str(orientation))
 
     w, h = image_info.get("originalWidth", 0) or 0, image_info.get("originalHeight", 0) or 0
     if w and h:
@@ -524,7 +587,16 @@ def generate_xmp(image_info, crs_fields, raw_metadata=None, exif_data=None):
     desc.set(f"{{{NS['crs']}}}RawFileName", raw_name)
 
     for field, value in crs_fields.items():
-        desc.set(f"{{{NS['crs']}}}{field}", str(value))
+        if field.endswith("__points"):
+            # Tone curve: render as <rdf:Seq> of <rdf:li>x, y</rdf:li>
+            base_field = field[:-8]  # strip "__points"
+            tc = ET.SubElement(desc, f"{{{NS['crs']}}}{base_field}")
+            tc_seq = ET.SubElement(tc, f"{{{NS['rdf']}}}Seq")
+            for pt in value.split(";"):
+                li = ET.SubElement(tc_seq, f"{{{NS['rdf']}}}li")
+                li.text = pt
+        else:
+            desc.set(f"{{{NS['crs']}}}{field}", str(value))
 
     defaults = {
         "WhiteBalance": "As Shot", "AutoLateralCA": "1",
@@ -551,12 +623,15 @@ def generate_xmp(image_info, crs_fields, raw_metadata=None, exif_data=None):
                        ("Function", "False"), ("RedEyeMode", "False")]:
         flash.set(f"{{{NS['exif']}}}{attr}", val)
 
+    # Write default (linear) tone curves for channels that don't have custom curves
     for suffix in ["", "Red", "Green", "Blue"]:
-        tc = ET.SubElement(desc, f"{{{NS['crs']}}}ToneCurvePV2012{suffix}")
-        tc_seq = ET.SubElement(tc, f"{{{NS['rdf']}}}Seq")
-        for pt in ["0, 0", "255, 255"]:
-            li = ET.SubElement(tc_seq, f"{{{NS['rdf']}}}li")
-            li.text = pt
+        field_name = f"ToneCurvePV2012{suffix}"
+        if field_name not in crs_fields:
+            tc = ET.SubElement(desc, f"{{{NS['crs']}}}{field_name}")
+            tc_seq = ET.SubElement(tc, f"{{{NS['rdf']}}}Seq")
+            for pt in ["0, 0", "255, 255"]:
+                li = ET.SubElement(tc_seq, f"{{{NS['rdf']}}}li")
+                li.text = pt
 
     rough = ET.tostring(root, encoding="unicode")
     try:
@@ -861,21 +936,91 @@ class ConvertWorker(QObject):
         _, palette_path = db.get_opt_record_paths(uid, pid, tid)
 
         mapped = {}
-        if palette_path:
-            pd = db.get_palette_params(palette_path)
-            if pd:
-                params = pd.get("Common", {}).get("Params", [])
-                mapped = map_pixcake_to_xmp(params, None)
+        palette_data = None
 
+        # ---- Step 1: Read base WB from ext info first (so palette can override) ----
         ext = db.get_ext_info(uid, pid, img.get("uuidKey", ""))
+        base_temp = None
+        base_tint = None
         if ext:
             ei = ext.get("extendInfo", {}).get("exifInfo", {})
             wbt = ei.get("WBT", {})
             if wbt.get("AsShot_CCT"):
                 mapped["WhiteBalance"] = "As Shot"
-                mapped["Temperature"] = str(wbt["AsShot_CCT"])
+                base_temp = int(wbt["AsShot_CCT"])
             if wbt.get("AsShot_Tint") is not None:
-                mapped["Tint"] = f"{wbt['AsShot_Tint']:+d}"
+                base_tint = int(wbt["AsShot_Tint"])
+
+        # ---- Step 2: Process palette params (basic, HSL, color grading, curves, crop) ----
+        if palette_path:
+            palette_data = db.get_palette_params(palette_path)
+            if palette_data:
+                # Common.Params — basic + HSL
+                common_params = palette_data.get("Common", {}).get("Params", [])
+                mapped.update(map_pixcake_to_xmp(common_params, None))
+
+                # Local[].StrParams — color grading, curves, etc.
+                for local in palette_data.get("Local", []):
+                    str_params = local.get("StrParams", [])
+                    mapped.update(map_pixcake_to_xmp(str_params, None))
+
+                # Crop / geometry from Common.Crop or palette root
+                crop = palette_data.get("Common", {}).get("Crop", {}) or palette_data.get("Crop", {})
+                if isinstance(crop, dict):
+                    if crop.get("Angle") is not None:
+                        mapped["CropAngle"] = str(round(crop["Angle"], 2))
+                    if crop.get("Left") is not None:
+                        mapped["CropLeft"] = str(round(crop["Left"], 4))
+                    if crop.get("Top") is not None:
+                        mapped["CropTop"] = str(round(crop["Top"], 4))
+                    if crop.get("Right") is not None:
+                        mapped["CropRight"] = str(round(crop["Right"], 4))
+                    if crop.get("Bottom") is not None:
+                        mapped["CropBottom"] = str(round(crop["Bottom"], 4))
+                    if any(k in crop for k in ("Angle", "Left", "Top")):
+                        mapped["HasCrop"] = "True"
+                        mapped["CropConstrainToWarp"] = "0"
+                        mapped["AlreadyApplied"] = "False"
+
+                # Tone Curve from ae arrays
+                self._extract_curves(palette_data, mapped)
+
+        # ---- Step 3: Merge Temperature / Tint ----
+        # palette may have written offset values for Temperature/Tint (pf 3007/3008)
+        # If we have base values from ext info, apply the palette offset on top
+        if base_temp is not None:
+            if "Temperature" in mapped:
+                # mapped value is the offset from palette; apply to base
+                try:
+                    offset = float(mapped["Temperature"])
+                    mapped["Temperature"] = str(int(base_temp + offset))
+                except ValueError:
+                    mapped["Temperature"] = str(base_temp)
+            else:
+                mapped["Temperature"] = str(base_temp)
+
+        if base_tint is not None:
+            if "Tint" in mapped:
+                try:
+                    offset = float(mapped["Tint"])
+                    mapped["Tint"] = f"{int(base_tint + offset):+d}"
+                except ValueError:
+                    mapped["Tint"] = f"{base_tint:+d}"
+            else:
+                mapped["Tint"] = f"{base_tint:+d}"
+
+        # ---- Step 4: Read star / pick / rotation from thumbnail table ----
+        star = img.get("starLevel")
+        if star is not None and 0 <= star <= 5:
+            mapped["Rating"] = str(int(star))
+
+        pick = img.get("selectFlag")
+        if pick is not None:
+            mapped["Pick"] = str(int(pick))
+
+        rotation = img.get("rotation")
+        if rotation is not None:
+            mapped["Orientation"] = str(self._rotation_to_orientation(rotation))
 
         raw_meta = read_raw_metadata(raw_path) if os.path.exists(raw_path) else None
         xmp_content = generate_xmp(img, mapped, raw_meta, exif_data)
@@ -889,6 +1034,43 @@ class ConvertWorker(QObject):
         with open(xmp_path, "w", encoding="utf-8") as f:
             f.write(xmp_content)
         return True
+
+    @staticmethod
+    def _rotation_to_orientation(rotation):
+        """Convert PixCake rotation (degrees) to EXIF Orientation."""
+        rotation = int(rotation) % 360
+        if rotation == 0:
+            return 1    # Normal
+        elif rotation == 90:
+            return 6    # Rotate 90 CW
+        elif rotation == 180:
+            return 3    # Rotate 180
+        elif rotation == 270:
+            return 8    # Rotate 270 CW
+        return 1        # Default: Normal
+
+    @staticmethod
+    def _extract_curves(palette_data, mapped):
+        """Extract tone curve data from paletteCfg ae arrays."""
+        curve_map = {
+            21000: "",        # RGB combined
+            90069: "Red",     # Red channel
+            90070: "Green",   # Green channel
+            90071: "Blue",    # Blue channel
+        }
+        params = palette_data.get("Common", {}).get("Params", [])
+        for param in params:
+            pf = param.get("pf")
+            ae = param.get("ae")
+            if pf in curve_map and ae and isinstance(ae, list) and len(ae) >= 4:
+                suffix = curve_map[pf]
+                field = f"ToneCurvePV2012{suffix}"
+                # ae is flat: [x1,y1,x2,y2,...] → pair up
+                points = []
+                for i in range(0, len(ae) - 1, 2):
+                    points.append(f"{round(ae[i])}, {round(ae[i+1])}")
+                mapped[f"{field}__points"] = ";".join(points)
+                mapped["ToneCurveName2012"] = "Custom"
 
 
 # ============================================================
