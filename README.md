@@ -1,26 +1,10 @@
-# PixCake → Lightroom XMP Converter<br><small>像素蛋糕 → Lightroom XMP 转换器</small>
+# PixCake → Lightroom XMP 转换器
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Python 3.8+](https://img.shields.io/badge/Python-3.8%2B-green.svg)](https://www.python.org/)
-[![PyQt5](https://img.shields.io/badge/GUI-PyQt5-orange.svg)](https://pypi.org/project/PyQt5/)
-
-Convert **PixCake (像素蛋糕)** photo editing data into Adobe Lightroom-compatible **XMP sidecar files**.
+[English](README_EN.md) | [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE) [![Python 3.8+](https://img.shields.io/badge/Python-3.8%2B-green.svg)](https://www.python.org/) [![PyQt5](https://img.shields.io/badge/GUI-PyQt5-orange.svg)](https://pypi.org/project/PyQt5/)
 
 将**像素蛋糕 (PixCake)** 的照片编辑数据转换为 Adobe Lightroom 可读取的 **XMP 附属文件**。
 
----
-
-## Features / 功能
-
-- 🔍 Auto-scan PixCake database — list all users and projects
-- 🖼️ Project card grid with thumbnails, names, and modification dates — click to select
-- 🎨 39 PixCake internal parameters → Lightroom `crs:` field mapping (with calibration coefficients)
-- 🌈 8-color HSL adjustments and color grading parameter mapping
-- 📷 RAW file EXIF metadata fallback reading (PIL / exifread)
-- ⚡ Batch conversion with multi-threaded XMP generation
-- 🪟 Modern borderless window UI with Tailwind CSS-inspired QSS + responsive column layout
-
----
+## 功能
 
 - 🔍 自动扫描 PixCake 数据库，列出所有用户及项目
 - 🖼️ 项目卡片网格：缩略图、名称、修改日期，点击选中
@@ -30,53 +14,30 @@ Convert **PixCake (像素蛋糕)** photo editing data into Adobe Lightroom-compa
 - ⚡ 批量转换，多线程生成 XMP
 - 🪟 现代无边框窗口 UI + Tailwind CSS 风格 QSS + 动态列数布局
 
----
+## 环境要求
 
-## Screenshot / 截图
-
-<!-- TODO: add a screenshot here -->
-<!-- 在此处添加截图 -->
-
----
-
-## Requirements / 环境要求
-
-| Package | Version | Purpose |
+| 包 | 版本 | 用途 |
 |---------|---------|---------|
-| Python | ≥ 3.8 | Runtime |
-| PyQt5 | ≥ 5.15 | GUI framework |
-| Pillow | ≥ 9.0 (optional) | RAW EXIF fallback |
-| exifread | ≥ 3.0 (optional) | RAW EXIF fallback |
+| Python | ≥ 3.8 | 运行环境 |
+| PyQt5 | ≥ 5.15 | GUI 框架 |
+| Pillow | ≥ 9.0（可选） | RAW EXIF 回退 |
+| exifread | ≥ 3.0（可选） | RAW EXIF 回退 |
 
 ```bash
 pip install -r requirements.txt
-# or via Anaconda / 或通过 Anaconda：
+# 或通过 Anaconda：
 conda install pyqt
 ```
 
----
-
-## Quick Start / 快速启动
+## 快速启动
 
 ```bash
 python pixcake_xmp_converter.py
 ```
 
-On Windows, double-click `run.bat`. / Windows 下可直接双击 `run.bat`。
+Windows 下可直接双击 `run.bat`。
 
----
-
-## Usage / 用法
-
-| Step | Action |
-|------|--------|
-| 1 | Launch — auto-loads PixCake database from `%APPDATA%\PixCake-qt_pro\db\` |
-| 2 | Use the top dropdown to switch users; the grid shows all projects for that user |
-| 3 | Click a card to select a project (blue highlight); Select All / Deselect All supported |
-| 4 | Set the XMP output folder at the bottom |
-| 5 | Click **转换为 XMP** to batch-generate XMP sidecars |
-
----
+## 用法
 
 | 步骤 | 操作 |
 |------|------|
@@ -86,14 +47,12 @@ On Windows, double-click `run.bat`. / Windows 下可直接双击 `run.bat`。
 | 4 | 底部设置 XMP 输出文件夹 |
 | 5 | 点击「转换为 XMP」批量生成 |
 
----
+## 参数映射
 
-## Parameter Mapping / 参数映射
+### 基础调节
 
-### Basic Adjustments / 基础调节
-
-| PixCake pfID | Lightroom Field | Scale Factor |
-|-------------|-----------------|:-----------:|
+| PixCake pfID | Lightroom 字段 | 缩放系数 |
+|-------------|---------------|:-----:|
 | 3000 | Exposure2012 | ×5.0 |
 | 21001 | Contrast2012 | ×(-25.0) |
 | 3003 | Highlights2012 | ×40.0 |
@@ -105,93 +64,70 @@ On Windows, double-click `run.bat`. / Windows 下可直接双击 `run.bat`。
 | 3022 | Dehaze | ×200.0 |
 | 90152 | Vibrance | ×250.0 |
 | 90014 | Saturation | ×200.0 |
-| 3006 | Sharpness | ×82.0 (absolute) |
+| 3006 | Sharpness | ×82.0（绝对值） |
 | 91005 | LuminanceSmoothing | ×280.0 |
 | 91003 | ColorNoiseReduction | ×(-47.0) |
 | 201 | PostCropVignetteAmount | ×100.0 |
 | 90118 | VignetteAmount | ×100.0 |
 
-### HSL / HSL 调节
+### HSL 调节
 
-Eight colors (Red / Orange / Yellow / Green / Aqua / Blue / Purple / Magenta) × three channels (Hue / Saturation / Luminance).
+八色（红/橙/黄/绿/青/蓝/紫/洋红）× 三通道（色相/饱和度/明度）
 
-八色（红/橙/黄/绿/青/蓝/紫/洋红）× 三通道（色相/饱和度/明度）。
+### 色彩分级
 
-### Color Grading / 色彩分级
+阴影/高光色相、饱和度及平衡
 
-Shadow & highlight hue, saturation, and balance.
+## 生成的 XMP 内容
 
-阴影/高光色相、饱和度及平衡。
-
----
-
-## Generated XMP Content / 生成的 XMP 内容
-
-| Namespace | Content |
+| 命名空间 | 内容 |
 |-----------|---------|
-| `crs:` | Edit parameters (exposure, contrast, HSL, etc.) |
-| `exif:` / `tiff:` | Camera, lens, exposure metadata |
-| `aux:` | Serial numbers, lens info |
-| `xmpMM:` | Document ID, history |
-| `photoshop:` | Original file extension |
-| `dc:` | MIME format |
+| `crs:` | 编辑参数（曝光、对比度、HSL 等） |
+| `exif:` / `tiff:` | 相机、镜头、曝光参数 |
+| `aux:` | 序列号、镜头信息 |
+| `xmpMM:` | 文档 ID、历史记录 |
+| `photoshop:` | 原始文件扩展名 |
+| `dc:` | MIME 格式 |
 
----
-
-## PixCake Directory Structure / 路径约定
-
-PixCake default data location:
+## PixCake 路径约定
 
 ```
 %APPDATA%\PixCake-qt_pro\
-├── db\                          ← SQLite databases
-│   ├── base.db                  ← User list
+├── db\                          ← SQLite 数据库
+│   ├── base.db                  ← 用户列表
 │   └── user_{uid}\
-│       └── project_{pid}\       ← Project DB (note project_ prefix)
+│       └── project_{pid}\       ← 项目数据库（注意 project_ 前缀）
 │           └── project.db
-└── project\                     ← File cache
+└── project\                     ← 文件缓存
     └── user_{uid}\
-        └── {pid}\               ← Cache dir (no project_ prefix)
-            ├── albumnThumbnail\  ← Project thumbnails
-            └── thumbnail_cache\ ← Edit parameter cache
+        └── {pid}\               ← 缓存目录（无 project_ 前缀）
+            ├── albumnThumbnail\  ← 项目缩略图
+            └── thumbnail_cache\ ← 编辑参数缓存
 ```
 
----
+## 构建
 
-## Build / 构建
-
-To build a standalone `.exe` with PyInstaller:
+使用 PyInstaller 构建独立 `.exe`：
 
 ```bash
-# Windows only / 仅限 Windows
+# 仅限 Windows
 build.bat
 ```
 
-The build process:
-1. Creates a Python virtual environment
-2. Installs dependencies + PyInstaller
-3. Converts `dist/icon.png` → `dist/icon.ico`
-4. Builds `dist/PixCakeXmpConverter.exe`
+构建流程：
+1. 创建 Python 虚拟环境
+2. 安装依赖 + PyInstaller
+3. 转换 `dist/icon.png` → `dist/icon.ico`
+4. 输出 `dist/PixCakeXmpConverter.exe`
 
-> **Note:** You need to provide your own `dist/icon.png` before building.
 > **注意：** 构建前需要自行准备 `dist/icon.png` 图标文件。
 
----
-
-## Known Limitations / 已知限制
-
-- Only a subset of PixCake exported parameters is supported (16 basic + 24 HSL + 5 color grading)
-- Some Lightroom parameters (tone curve, calibration, etc.) are not currently mapped
-- White balance color temperature/tint must be read from `extendInfo` cache
-
----
+## 已知限制
 
 - 仅支持 PixCake 导出的参数子集（16 个基础 + 24 HSL + 5 色彩分级）
 - 部分 LR 参数（曲线、校准等）当前未映射
 - 白平衡色温/色调需从 `extendInfo` 缓存读取
 
----
-
-## License / 许可
+## 许可
 
 [MIT](LICENSE)
