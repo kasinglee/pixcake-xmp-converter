@@ -13,7 +13,7 @@ import re
 import uuid
 import threading
 import xml.etree.ElementTree as ET
-from xml.dom import minidom
+from xml.sax.saxutils import escape, quoteattr
 from datetime import datetime, timezone, timedelta
 from fractions import Fraction
 from pathlib import Path
@@ -423,16 +423,15 @@ def read_raw_metadata(filepath):
         pass
     except Exception:
         pass
-    if not metadata:
-        try:
-            import exifread
-            with open(filepath, "rb") as f:
-                for tag, value in exifread.process_file(f, details=False).items():
-                    metadata[tag] = str(value)
-        except ImportError:
-            pass
-        except Exception:
-            pass
+    try:
+        import exifread
+        with open(filepath, "rb") as f:
+            for tag, value in exifread.process_file(f, details=False).items():
+                metadata.setdefault(tag, str(value))
+    except ImportError:
+        pass
+    except Exception:
+        pass
     if not metadata:
         try:
             with open(filepath, "rb") as f:
@@ -451,6 +450,13 @@ def read_raw_metadata(filepath):
 # ============================================================
 # XMP Generator
 # ============================================================
+
+RAW_EXTENSIONS = {
+    ".3FR", ".ARW", ".CR2", ".CR3", ".DNG", ".ERF", ".FFF", ".GPR",
+    ".IIQ", ".MEF", ".MOS", ".MRW", ".NEF", ".NRW", ".ORF", ".PEF",
+    ".RAF", ".RAW", ".RW2", ".SR2", ".SRF", ".X3F",
+}
+
 
 def _to_rational_str(value):
     """Convert EXIF display format to XMP rational string.
@@ -488,14 +494,33 @@ def _to_lens_info_rational(value):
     """
     if value is None:
         return None
-    v = str(value).replace(" ", "")
+    v = str(value).strip().strip("[]()")
+    parts = re.split(r"[\s,]+", v)
     result = []
-    for p in v.split(","):
+    for idx, p in enumerate(part for part in parts if part):
+        if re.match(r'^[+-]?\d+/\d+$', p):
+            result.append(p)
+            continue
         try:
-            result.append(f"{int(float(p))}/1")
+            num = float(p)
+            if idx >= 2 and num == 0:
+                result.append("0/0")
+            elif num == int(num):
+                result.append(f"{int(num)}/1")
+            else:
+                frac = Fraction(num).limit_denominator(100)
+                result.append(f"{frac.numerator}/{frac.denominator}")
         except (ValueError, TypeError):
             result.append(p)
     return " ".join(result)
+
+
+def _parse_int_like(value):
+    """Parse integer-ish EXIF values such as "6000", "[6000]", or "6000 pixels"."""
+    if value is None:
+        return None
+    match = re.search(r"\d+", str(value))
+    return int(match.group(0)) if match else None
 
 
 def _parse_orientation_from_raw(raw_meta):
@@ -522,10 +547,10 @@ def _parse_orientation_from_raw(raw_meta):
                 v_lower = v.lower()
                 if "180" in v_lower:
                     return 3
+                if "90" in v_lower and ("ccw" in v_lower or "counter" in v_lower):
+                    return 8
                 if "90" in v_lower and "cw" in v_lower:
                     return 6
-                if "90" in v_lower and "ccw" in v_lower:
-                    return 8
                 if "270" in v_lower:
                     return 8
                 return None
@@ -540,16 +565,169 @@ def _parse_raw_dimensions(raw_meta):
     if not raw_meta:
         return None, None
     w = h = None
+    width_keys = ("imagewidth", "exifimagewidth", "pixelxdimension")
+    height_keys = ("imagelength", "imageheight", "exifimagelength", "pixelydimension")
     for rk, rv in raw_meta.items():
-        key_clean = rk.lower().replace(" ", "").replace("image", "")
-        try:
-            if key_clean == "width" and "pixel" not in rk.lower():
-                w = int(float(str(rv)))
-            if key_clean == "length" and "pixel" not in rk.lower():
-                h = int(float(str(rv)))
-        except (ValueError, TypeError):
-            pass
+        key_clean = re.sub(r"[^a-z0-9]", "", rk.lower())
+        if "thumbnail" in key_clean:
+            continue
+        if any(key_clean.endswith(key) for key in width_keys):
+            w = _parse_int_like(rv) or w
+        if any(key_clean.endswith(key) for key in height_keys):
+            h = _parse_int_like(rv) or h
     return w, h
+
+
+def _parse_raw_capture_datetime(raw_meta):
+    """Read the camera capture time from RAW EXIF and treat no-zone values as CST."""
+    if not raw_meta:
+        return None
+    priority = ("datetimeoriginal", "createdate", "datetime")
+    candidates = []
+    for wanted in priority:
+        for rk, rv in raw_meta.items():
+            key_clean = re.sub(r"[^a-z0-9]", "", rk.lower())
+            if key_clean.endswith(wanted):
+                candidates.append(str(rv).strip())
+    for value in candidates:
+        match = re.search(
+            r"(\d{4})[:\-](\d{2})[:\-](\d{2})[ T](\d{2}):(\d{2}):(\d{2})"
+            r"(?:\s*(Z|[+-]\d{2}:?\d{2}))?",
+            value,
+        )
+        if not match:
+            continue
+        year, month, day, hour, minute, second, tz_value = match.groups()
+        dt = datetime(
+            int(year), int(month), int(day),
+            int(hour), int(minute), int(second),
+        )
+        if tz_value:
+            if tz_value == "Z":
+                return dt.replace(tzinfo=timezone.utc).astimezone(CST)
+            sign = 1 if tz_value[0] == "+" else -1
+            offset_text = tz_value[1:].replace(":", "")
+            offset = timedelta(
+                hours=int(offset_text[:2]),
+                minutes=int(offset_text[2:4] or "0"),
+            )
+            return dt.replace(tzinfo=timezone(sign * offset)).astimezone(CST)
+        return dt.replace(tzinfo=CST)
+    return None
+
+
+def _prefixed_xml_name(name, ns_by_uri):
+    if name.startswith("{"):
+        uri, local = name[1:].split("}", 1)
+        prefix = ns_by_uri.get(uri)
+        return f"{prefix}:{local}" if prefix else local
+    return name
+
+
+def _format_attr(name, value, ns_by_uri):
+    return f"{_prefixed_xml_name(name, ns_by_uri)}={quoteattr(str(value))}"
+
+
+def _format_xmp_element(elem, ns_by_uri, level):
+    indent = " " * level
+    name = _prefixed_xml_name(elem.tag, ns_by_uri)
+    attrs = [_format_attr(k, v, ns_by_uri) for k, v in elem.attrib.items()]
+    children = list(elem)
+    text = (elem.text or "").strip()
+
+    if not children and not text:
+        if not attrs:
+            return [f"{indent}<{name}/>"]
+        lines = [f"{indent}<{name}"]
+        for attr in attrs[:-1]:
+            lines.append(f"{indent} {attr}")
+        lines.append(f"{indent} {attrs[-1]}/>")
+        return lines
+
+    if not children:
+        attr_text = f" {' '.join(attrs)}" if attrs else ""
+        return [f"{indent}<{name}{attr_text}>{escape(text)}</{name}>"]
+
+    if attrs:
+        lines = [f"{indent}<{name}"]
+        for attr in attrs[:-1]:
+            lines.append(f"{indent} {attr}")
+        lines.append(f"{indent} {attrs[-1]}>")
+    else:
+        lines = [f"{indent}<{name}>"]
+
+    for child in children:
+        lines.extend(_format_xmp_element(child, ns_by_uri, level + 1))
+    lines.append(f"{indent}</{name}>")
+    return lines
+
+
+def _format_xmp_document(root, desc, NS):
+    ns_by_uri = {uri: prefix for prefix, uri in NS.items()}
+    desc_ns_order = [
+        "xmp", "photoshop", "exif", "xmpDM", "tiff", "aux", "exifEX",
+        "dc", "xmpMM", "stEvt", "crd", "crs",
+    ]
+    xmptk_key = f"{{{NS['x']}}}xmptk"
+    rdf_about_key = f"{{{NS['rdf']}}}about"
+
+    lines = [
+        f"<x:xmpmeta xmlns:x={quoteattr(NS['x'])} "
+        f"x:xmptk={quoteattr(root.get(xmptk_key, ''))}>",
+        f" <rdf:RDF xmlns:rdf={quoteattr(NS['rdf'])}>",
+        f"  <rdf:Description rdf:about={quoteattr(desc.get(rdf_about_key, ''))}",
+    ]
+
+    for prefix in desc_ns_order:
+        lines.append(f"    xmlns:{prefix}={quoteattr(NS[prefix])}")
+
+    attrs = [
+        _format_attr(key, value, ns_by_uri)
+        for key, value in desc.attrib.items()
+        if key != rdf_about_key
+    ]
+    if attrs:
+        for attr in attrs[:-1]:
+            lines.append(f"   {attr}")
+        lines.append(f"   {attrs[-1]}>")
+    else:
+        lines[-1] += ">"
+
+    for child in list(desc):
+        lines.extend(_format_xmp_element(child, ns_by_uri, 3))
+
+    lines.extend(["  </rdf:Description>", " </rdf:RDF>", "</x:xmpmeta>"])
+    return "\n".join(lines) + "\n"
+
+
+def _find_nested_value(data, normalized_keys):
+    if isinstance(data, dict):
+        for key, value in data.items():
+            normalized = re.sub(r"[^a-z0-9]", "", str(key).lower())
+            if normalized in normalized_keys:
+                return value
+            found = _find_nested_value(value, normalized_keys)
+            if found is not None:
+                return found
+    elif isinstance(data, list):
+        for item in data:
+            found = _find_nested_value(item, normalized_keys)
+            if found is not None:
+                return found
+    return None
+
+
+def _to_int_or_none(value):
+    if value is None:
+        return None
+    try:
+        return int(round(float(str(value).strip())))
+    except (TypeError, ValueError):
+        return None
+
+
+def _is_signed_offset(value):
+    return bool(re.match(r"^[+-]\d+(?:\.\d+)?$", str(value).strip()))
 
 
 def generate_xmp(image_info, crs_fields, raw_metadata=None, exif_data=None):
@@ -596,9 +774,11 @@ def generate_xmp(image_info, crs_fields, raw_metadata=None, exif_data=None):
     desc.set(f"{{{NS['xmp']}}}ModifyDate", now)
     desc.set(f"{{{NS['xmp']}}}MetadataDate", now)
 
-    if image_info.get("capture_dt"):
-        # capture_dt is UTC-aware; convert to CST before formatting
-        local_dt = image_info["capture_dt"].astimezone(CST)
+    raw_capture_dt = _parse_raw_capture_datetime(raw_meta)
+    capture_dt = raw_capture_dt or image_info.get("capture_dt")
+    if capture_dt:
+        # Prefer RAW EXIF capture time; PixCake's DB timestamp can be shifted by timezone.
+        local_dt = capture_dt.astimezone(CST)
         cd_tz = local_dt.strftime("%Y-%m-%dT%H:%M:%S+08:00")
         cd_no_tz = local_dt.strftime("%Y-%m-%dT%H:%M:%S")
         desc.set(f"{{{NS['xmp']}}}CreateDate", cd_tz)
@@ -627,19 +807,30 @@ def generate_xmp(image_info, crs_fields, raw_metadata=None, exif_data=None):
         v = get_val(ek)
         if v:
             desc.set(ns_key, v)
+    raw_ext = os.path.splitext(image_info.get("originalImagePath", ""))[1]
+    raw_w, raw_h = _parse_raw_dimensions(raw_meta)
+    orig_w = _parse_int_like(image_info.get("originalWidth"))
+    orig_h = _parse_int_like(image_info.get("originalHeight"))
+
     # ---- Orientation ----
-    # Prefer raw-file EXIF orientation (sensor-native); fall back to PixCake rotation
+    # Prefer raw-file EXIF orientation (sensor-native); fall back to PixCake rotation.
     raw_orient = _parse_orientation_from_raw(raw_meta)
     orientation = crs_fields.pop("Orientation", "1")
     if raw_orient is not None and 1 <= raw_orient <= 8:
         orientation = str(raw_orient)
+    elif (
+        orientation == "1"
+        and orig_w and orig_h and orig_h > orig_w
+        and raw_ext.upper() in RAW_EXTENSIONS
+        and (not raw_w or not raw_h or raw_w > raw_h)
+    ):
+        # PixCake stores display pixels as portrait, while RAW/XMP uses sensor order
+        # plus orientation. Canon CR3 portrait files commonly need Orientation=8.
+        orientation = "8"
     desc.set(f"{{{NS['tiff']}}}Orientation", orientation)
 
     # ---- Dimensions ----
     # Use raw-file sensor dimensions when available; otherwise derive from PixCake data
-    raw_w, raw_h = _parse_raw_dimensions(raw_meta)
-    orig_w = image_info.get("originalWidth", 0) or 0
-    orig_h = image_info.get("originalHeight", 0) or 0
     if raw_w and raw_h:
         w, h = raw_w, raw_h
     elif orientation in ("5", "6", "7", "8") and orig_w and orig_h:
@@ -650,8 +841,8 @@ def generate_xmp(image_info, crs_fields, raw_metadata=None, exif_data=None):
     if w and h:
         desc.set(f"{{{NS['tiff']}}}ImageWidth", str(w))
         desc.set(f"{{{NS['tiff']}}}ImageLength", str(h))
-    desc.set(f"{{{NS['exif']}}}PixelXDimension", str(w))
-    desc.set(f"{{{NS['exif']}}}PixelYDimension", str(h))
+        desc.set(f"{{{NS['exif']}}}PixelXDimension", str(w))
+        desc.set(f"{{{NS['exif']}}}PixelYDimension", str(h))
 
     # EXIF fields that should be written in rational (n/d) format
     _RATIONAL_FIELDS = {
@@ -691,11 +882,10 @@ def generate_xmp(image_info, crs_fields, raw_metadata=None, exif_data=None):
             desc.set(ns_key, str(v))
 
     # LensInfo / LensSpecification — convert to rational format
-    lens_info = get_val("LensSpecification")
+    lens_info = get_val("LensSpecification") or get_val("LensInfo")
     if lens_info:
         desc.set(f"{{{NS['aux']}}}LensInfo", _to_lens_info_rational(lens_info))
 
-    raw_ext = os.path.splitext(image_info.get("originalImagePath", ""))[1]
     desc.set(f"{{{NS['photoshop']}}}SidecarForExtension",
              raw_ext.lstrip(".").upper())
 
@@ -717,15 +907,10 @@ def generate_xmp(image_info, crs_fields, raw_metadata=None, exif_data=None):
     desc.set(f"{{{NS['crs']}}}ProcessVersion", "15.4")
     desc.set(f"{{{NS['crs']}}}RawFileName", raw_name)
 
+    curve_points = {}
     for field, value in crs_fields.items():
         if field.endswith("__points"):
-            # Tone curve: render as <rdf:Seq> of <rdf:li>x, y</rdf:li>
-            base_field = field[:-8]  # strip "__points"
-            tc = ET.SubElement(desc, f"{{{NS['crs']}}}{base_field}")
-            tc_seq = ET.SubElement(tc, f"{{{NS['rdf']}}}Seq")
-            for pt in value.split(";"):
-                li = ET.SubElement(tc_seq, f"{{{NS['rdf']}}}li")
-                li.text = pt
+            curve_points[field[:-8]] = value
         else:
             desc.set(f"{{{NS['crs']}}}{field}", str(value))
 
@@ -758,21 +943,20 @@ def generate_xmp(image_info, crs_fields, raw_metadata=None, exif_data=None):
                        ("Function", "False"), ("RedEyeMode", "False")]:
         flash.set(f"{{{NS['exif']}}}{attr}", val)
 
-    # Write default (linear) tone curves for channels that don't have custom curves
+    # Write each tone curve once, using custom PixCake points where present.
     for suffix in ["", "Red", "Green", "Blue"]:
         field_name = f"ToneCurvePV2012{suffix}"
-        if field_name not in crs_fields:
-            tc = ET.SubElement(desc, f"{{{NS['crs']}}}{field_name}")
-            tc_seq = ET.SubElement(tc, f"{{{NS['rdf']}}}Seq")
-            for pt in ["0, 0", "255, 255"]:
-                li = ET.SubElement(tc_seq, f"{{{NS['rdf']}}}li")
-                li.text = pt
+        points = curve_points.get(field_name, "0, 0;255, 255")
+        tc = ET.SubElement(desc, f"{{{NS['crs']}}}{field_name}")
+        tc_seq = ET.SubElement(tc, f"{{{NS['rdf']}}}Seq")
+        for pt in points.split(";"):
+            li = ET.SubElement(tc_seq, f"{{{NS['rdf']}}}li")
+            li.text = pt
 
-    rough = ET.tostring(root, encoding="unicode")
     try:
-        return minidom.parseString(rough).toprettyxml(
-            indent=" ", encoding="UTF-8").decode("utf-8")
+        return _format_xmp_document(root, desc, NS)
     except Exception:
+        rough = ET.tostring(root, encoding="unicode")
         return '<?xml version="1.0" encoding="UTF-8"?>\n' + rough
 
 
@@ -783,155 +967,198 @@ def generate_xmp(image_info, crs_fields, raw_metadata=None, exif_data=None):
 QSS = r"""
 /* ===== Global ===== */
 * {
-    font-family: 'Inter', 'Segoe UI', 'Microsoft YaHei UI', sans-serif;
+    font-family: 'SF Pro Display', '-apple-system', 'BlinkMacSystemFont', 'Inter', 'Segoe UI', 'Microsoft YaHei UI', sans-serif;
     font-size: 13px;
+    color: #F5F5F7;
 }
 
 QMainWindow {
-    background-color: #F1F5F9;
+    background-color: #1E1E1E;
 }
 
 /* ===== Title Bar ===== */
 #titleBar {
-    background-color: #FFFFFF;
-    border-bottom: 1px solid #E2E8F0;
-    min-height: 42px;
-    max-height: 42px;
+    background-color: #1E1E1E;
+    border-bottom: 1px solid #2D2D2D;
+    min-height: 48px;
+    max-height: 48px;
 }
 #titleLabel {
     font-size: 13px;
     font-weight: 600;
-    color: #1E293B;
-    padding-left: 12px;
+    color: #FFFFFF;
+    padding-left: 8px;
 }
+
+/* Apple style traffic lights */
 #btnMin, #btnMax, #btnClose {
     border: none;
-    border-radius: 0;
+    border-radius: 6px;
     padding: 0;
-    min-width: 46px;
-    min-height: 42px;
-    max-width: 46px;
-    max-height: 42px;
-    font-size: 15px;
+    min-width: 12px;
+    min-height: 12px;
+    max-width: 12px;
+    max-height: 12px;
 }
-#btnMin { color: #64748B; }
-#btnMin:hover { background-color: #F1F5F9; color: #1E293B; }
-#btnMax { color: #64748B; }
-#btnMax:hover { background-color: #F1F5F9; color: #1E293B; }
-#btnClose { color: #64748B; }
-#btnClose:hover { background-color: #EF4444; color: #FFFFFF; }
+#btnClose {
+    background-color: #FF5F56;
+}
+#btnClose:hover {
+    background-color: #E0443E;
+}
+#btnMin {
+    background-color: #FFBD2E;
+}
+#btnMin:hover {
+    background-color: #DEA123;
+}
+#btnMax {
+    background-color: #27C93F;
+}
+#btnMax:hover {
+    background-color: #1AAB29;
+}
 
 /* ===== Top Toolbar ===== */
 #toolbar {
-    background-color: #FFFFFF;
-    border-bottom: 1px solid #E2E8F0;
-    padding: 12px 16px;
+    background-color: #1E1E1E;
+    border-bottom: 1px solid #2D2D2D;
+    padding: 12px 20px;
 }
 
 /* ===== ComboBox ===== */
 QComboBox {
-    background-color: #F8FAFC;
-    border: 1px solid #E2E8F0;
-    border-radius: 6px;
+    background-color: #2C2C2E;
+    border: 1px solid #3A3A3C;
+    border-radius: 8px;
     padding: 6px 12px;
-    min-width: 120px;
-    color: #1E293B;
+    min-width: 140px;
+    color: #FFFFFF;
 }
-QComboBox:hover { border-color: #CBD5E1; }
-QComboBox:focus { border: 2px solid #3B82F6; }
+QComboBox:hover {
+    background-color: #3A3A3C;
+    border-color: #48484A;
+}
+QComboBox:focus {
+    border: 1px solid #0A84FF;
+}
 QComboBox::drop-down {
     subcontrol-origin: padding;
     subcontrol-position: top right;
     width: 24px;
-    border-left: 1px solid #E2E8F0;
+    border-left: none;
 }
 QComboBox QAbstractItemView {
-    background-color: #FFFFFF;
-    border: 1px solid #E2E8F0;
-    border-radius: 4px;
-    selection-background-color: #EFF6FF;
-    selection-color: #1E293B;
+    background-color: #2C2C2E;
+    border: 1px solid #3A3A3C;
+    border-radius: 8px;
+    selection-background-color: #0A84FF;
+    selection-color: #FFFFFF;
+    color: #FFFFFF;
     outline: none;
 }
 
 /* ===== PushButton ===== */
 QPushButton {
-    background-color: #2563EB;
+    background-color: #0A84FF;
     color: #FFFFFF;
     border: none;
-    border-radius: 6px;
+    border-radius: 8px;
     padding: 8px 16px;
     font-weight: 600;
     font-size: 13px;
 }
-QPushButton:hover { background-color: #1D4ED8; }
-QPushButton:pressed { background-color: #1E40AF; }
-QPushButton:disabled { background-color: #94A3B8; }
+QPushButton:hover {
+    background-color: #007AFF;
+}
+QPushButton:pressed {
+    background-color: #0066CC;
+}
+QPushButton:disabled {
+    background-color: #3A3A3C;
+    color: #8E8E93;
+}
 
 QPushButton#btnSecondary {
-    background-color: #FFFFFF;
-    color: #475569;
-    border: 1px solid #E2E8F0;
+    background-color: #2C2C2E;
+    color: #FFFFFF;
+    border: 1px solid #3A3A3C;
     font-weight: 500;
 }
 QPushButton#btnSecondary:hover {
-    background-color: #F8FAFC;
-    border-color: #CBD5E1;
+    background-color: #3A3A3C;
+    border-color: #48484A;
+}
+QPushButton#btnSecondary:pressed {
+    background-color: #48484A;
 }
 
 QPushButton#btnGhost {
     background-color: transparent;
-    color: #475569;
+    color: #AEAEB2;
     border: none;
     font-weight: 500;
     padding: 6px 12px;
 }
 QPushButton#btnGhost:hover {
-    background-color: #F1F5F9;
-    color: #1E293B;
+    background-color: #2C2C2E;
+    color: #FFFFFF;
 }
 
 QPushButton#btnConvert {
-    background-color: #2563EB;
+    background-color: #0A84FF;
     color: #FFFFFF;
-    border-radius: 6px;
-    padding: 10px 28px;
+    border-radius: 10px;
+    padding: 12px 32px;
     font-size: 14px;
     font-weight: 700;
-    min-width: 160px;
+    min-width: 180px;
+}
+QPushButton#btnConvert:hover {
+    background-color: #007AFF;
+}
+QPushButton#btnConvert:pressed {
+    background-color: #0066CC;
 }
 
 /* ===== LineEdit ===== */
 QLineEdit {
-    background-color: #F8FAFC;
-    border: 1px solid #E2E8F0;
-    border-radius: 6px;
+    background-color: #2C2C2E;
+    border: 1px solid #3A3A3C;
+    border-radius: 8px;
     padding: 8px 12px;
-    color: #1E293B;
-    selection-background-color: #BFDBFE;
+    color: #FFFFFF;
+    selection-background-color: #0A84FF;
 }
-QLineEdit:hover { border-color: #CBD5E1; }
-QLineEdit:focus { border: 2px solid #3B82F6; }
+QLineEdit:hover {
+    border-color: #48484A;
+}
+QLineEdit:focus {
+    border: 1px solid #0A84FF;
+    background-color: #1C1C1E;
+}
 
 /* ===== Scroll Area ===== */
 QScrollArea {
     border: none;
-    background-color: #F1F5F9;
+    background-color: #121212;
 }
 QScrollArea > QWidget > QWidget {
-    background-color: #F1F5F9;
+    background-color: #121212;
 }
 QScrollBar:vertical {
     background-color: transparent;
     width: 8px;
-    margin: 0;
+    margin: 4px;
 }
 QScrollBar::handle:vertical {
-    background-color: #CBD5E1;
+    background-color: #3A3A3C;
     border-radius: 4px;
     min-height: 30px;
 }
-QScrollBar::handle:vertical:hover { background-color: #94A3B8; }
+QScrollBar::handle:vertical:hover {
+    background-color: #48484A;
+}
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
     height: 0; width: 0;
 }
@@ -941,66 +1168,67 @@ QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
 
 /* ===== Project Card ===== */
 #cardFrame {
-    background-color: #FFFFFF;
-    border: 1px solid #E2E8F0;
-    border-radius: 10px;
+    background-color: #1C1C1E;
+    border: 1px solid #2D2D2D;
+    border-radius: 12px;
 }
 #cardFrame:hover {
-    border-color: #93C5FD;
+    border-color: #48484A;
+    background-color: #2C2C2E;
 }
 #cardFrame[selected="true"] {
-    border: 2px solid #3B82F6;
-    background-color: #EFF6FF;
+    border: 2px solid #0A84FF;
+    background-color: #242C3E;
 }
 #cardThumb {
-    background-color: #E2E8F0;
+    background-color: #2C2C2E;
     border-top-left-radius: 10px;
     border-top-right-radius: 10px;
 }
 #cardName {
     font-size: 13px;
     font-weight: 600;
-    color: #1E293B;
+    color: #FFFFFF;
     padding: 4px 0 0 0;
 }
 #cardDate {
     font-size: 12px;
-    color: #94A3B8;
+    color: #8E8E93;
     padding: 2px 0 0 0;
 }
 
 /* ===== Bottom Bar ===== */
 #bottomBar {
-    background-color: #FFFFFF;
-    border-top: 1px solid #E2E8F0;
-    padding: 12px 16px;
+    background-color: #1E1E1E;
+    border-top: 1px solid #2D2D2D;
+    padding: 16px 20px;
 }
 
 /* ===== ProgressBar ===== */
 QProgressBar {
-    background-color: #E2E8F0;
+    background-color: #2C2C2E;
     border: none;
-    border-radius: 4px;
-    height: 6px;
+    border-radius: 6px;
+    height: 12px;
     text-align: center;
 }
 QProgressBar::chunk {
-    background-color: #2563EB;
-    border-radius: 4px;
+    background-color: #0A84FF;
+    border-radius: 6px;
 }
 
 /* ===== StatusBar ===== */
 QStatusBar {
-    background-color: #F8FAFC;
-    border-top: 1px solid #E2E8F0;
-    color: #64748B;
+    background-color: #1E1E1E;
+    border-top: 1px solid #2D2D2D;
+    color: #8E8E93;
     font-size: 12px;
-    padding: 2px 8px;
+    padding: 4px 12px;
 }
 
 /* ===== Info Label ===== */
 #infoLabel {
-    color: #64748B;
+    color: #8E8E93;
     font-size: 13px;
 }
 """
@@ -1085,11 +1313,20 @@ class ConvertWorker(QObject):
             wbt = ei.get("WBT", {})
             if not isinstance(wbt, dict):
                 wbt = {}
-            if wbt.get("AsShot_CCT"):
+            as_shot_cct = (
+                wbt.get("AsShot_CCT")
+                if wbt.get("AsShot_CCT") is not None
+                else _find_nested_value(ext, {"asshotcct"})
+            )
+            as_shot_tint = (
+                wbt.get("AsShot_Tint")
+                if wbt.get("AsShot_Tint") is not None
+                else _find_nested_value(ext, {"asshottint"})
+            )
+            base_temp = _to_int_or_none(as_shot_cct)
+            base_tint = _to_int_or_none(as_shot_tint)
+            if base_temp is not None:
                 mapped["WhiteBalance"] = "As Shot"
-                base_temp = int(wbt["AsShot_CCT"])
-            if wbt.get("AsShot_Tint") is not None:
-                base_tint = int(wbt["AsShot_Tint"])
 
         # ---- Step 2: Process palette params (basic, HSL, color grading, curves, crop) ----
         if palette_path:
@@ -1153,6 +1390,11 @@ class ConvertWorker(QObject):
                     mapped["Tint"] = f"{base_tint:+d}"
             else:
                 mapped["Tint"] = f"{base_tint:+d}"
+
+        if base_temp is None and _is_signed_offset(mapped.get("Temperature", "")):
+            mapped.pop("Temperature", None)
+        if base_tint is None and _is_signed_offset(mapped.get("Tint", "")):
+            mapped.pop("Tint", None)
 
         # ---- Step 4: Read star / pick / rotation from thumbnail table ----
         star = img.get("starLevel")
@@ -1267,6 +1509,22 @@ class ProjectCard(QFrame):
 
         layout.addWidget(text_widget)
 
+        # Rounded Selection Badge floating on top
+        self.select_badge = QLabel(self)
+        self.select_badge.setFixedSize(22, 22)
+        self.select_badge.setStyleSheet(
+            "background-color: #0A84FF;"
+            "color: #FFFFFF;"
+            "border-radius: 11px;"
+            "font-weight: bold;"
+            "font-size: 12px;"
+            "border: 1.5px solid #1C1C1E;"
+        )
+        self.select_badge.setText("✓")
+        self.select_badge.setAlignment(Qt.AlignCenter)
+        self.select_badge.move(CARD_W - 30, 8)
+        self.select_badge.setVisible(False)
+
         # Load thumbnail in background
         self._load_thumbnail()
 
@@ -1276,6 +1534,7 @@ class ProjectCard(QFrame):
             return
         self.setFixedSize(width, CARD_H)
         self.thumb.setFixedSize(width, THUMB_H)
+        self.select_badge.move(width - 30, 8)
         self._refresh_thumbnail()
 
     def _load_thumbnail(self):
@@ -1285,7 +1544,10 @@ class ProjectCard(QFrame):
                 self._thumb_pixmap = QPixmap(path)
                 self._refresh_thumbnail()
             except Exception:
-                self.thumb.setText("📷")
+                self.thumb.setText("📷 Error")
+        else:
+            self.thumb.setStyleSheet("background-color: #2C2C2E; color: #8E8E93; font-weight: 500; font-size: 14px;")
+            self.thumb.setText("📁 空白项目")
 
     def _refresh_thumbnail(self):
         if not self._thumb_pixmap or self._thumb_pixmap.isNull():
@@ -1307,6 +1569,7 @@ class ProjectCard(QFrame):
     def selected(self, val):
         self._selected = val
         self.setProperty("selected", "true" if val else "false")
+        self.select_badge.setVisible(val)
         self.style().unpolish(self)
         self.style().polish(self)
 
@@ -1328,23 +1591,28 @@ class TitleBar(QWidget):
         self.setObjectName("titleBar")
 
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setContentsMargins(16, 0, 16, 0)
         layout.setSpacing(0)
 
-        # App icon + title
-        title = QLabel(APP_TITLE)
-        title.setObjectName("titleLabel")
-        layout.addWidget(title)
-        layout.addStretch()
-
-        # Min / Max / Close
-        for obj_name, text in [("btnMin", "─"), ("btnMax", "□"), ("btnClose", "✕")]:
-            btn = QPushButton(text)
+        # Left: macOS Traffic Lights (Close, Min, Zoom/Max)
+        for obj_name in ["btnClose", "btnMin", "btnMax"]:
+            btn = QPushButton("")
             btn.setObjectName(obj_name)
-            btn.setFlat(True)
+            btn.setFixedSize(12, 12)
+            btn.setCursor(QCursor(Qt.PointingHandCursor))
             btn.clicked.connect(
                 lambda checked, n=obj_name: self._window_action(n))
             layout.addWidget(btn)
+            layout.addSpacing(8)
+
+        layout.addSpacing(12)
+
+        # Title
+        title = QLabel(APP_TITLE)
+        title.setObjectName("titleLabel")
+        layout.addWidget(title)
+
+        layout.addStretch()
 
     def _window_action(self, name):
         if name == "btnMin":
@@ -1426,7 +1694,7 @@ class MainWindow(QMainWindow):
 
         # User selector
         user_label = QLabel("用户")
-        user_label.setStyleSheet("font-weight: 600; color: #475569;")
+        user_label.setStyleSheet("font-weight: 600; color: #AEAEB2;")
         tb_layout.addWidget(user_label)
 
         self.user_combo = QComboBox()
@@ -1490,7 +1758,7 @@ class MainWindow(QMainWindow):
         btm_layout.setSpacing(12)
 
         out_label = QLabel("输出到")
-        out_label.setStyleSheet("font-weight: 600; color: #475569;")
+        out_label.setStyleSheet("font-weight: 600; color: #AEAEB2;")
         btm_layout.addWidget(out_label)
 
         self.out_path = QLineEdit()
