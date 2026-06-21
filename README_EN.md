@@ -1,6 +1,6 @@
 # PixCake → Lightroom XMP Converter
 
-[中文](README.md) | [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE) [![Python 3.8+](https://img.shields.io/badge/Python-3.8%2B-green.svg)](https://www.python.org/) [![PyQt5](https://img.shields.io/badge/GUI-PyQt5-orange.svg)](https://pypi.org/project/PyQt5/)
+[中文](README.md) | [![Version](https://img.shields.io/badge/Version-v1.0.1-blue.svg)](README.md) [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE) [![Python 3.8+](https://img.shields.io/badge/Python-3.8%2B-green.svg)](https://www.python.org/) [![PyQt5](https://img.shields.io/badge/GUI-PyQt5-orange.svg)](https://pypi.org/project/PyQt5/)
 
 Convert **PixCake (像素蛋糕)** photo editing data into Adobe Lightroom-compatible **XMP sidecar files**.
 
@@ -118,7 +118,8 @@ The build process:
 1. Creates a Python virtual environment
 2. Installs dependencies + PyInstaller
 3. Converts `dist/icon.png` → `dist/icon.ico`
-4. Outputs `dist/PixCakeXmpConverter.exe`
+4. Read version from `README.md` (badge `Version-vX.Y.Z`)
+5. Output `dist/PixCakeXmpConverter-vX.Y.Z.exe`
 
 > **Note:** You need to provide your own `dist/icon.png` before building.
 

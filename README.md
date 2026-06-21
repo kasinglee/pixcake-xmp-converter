@@ -1,6 +1,6 @@
 # PixCake → Lightroom XMP 转换器
 
-[English](README_EN.md) | [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE) [![Python 3.8+](https://img.shields.io/badge/Python-3.8%2B-green.svg)](https://www.python.org/) [![PyQt5](https://img.shields.io/badge/GUI-PyQt5-orange.svg)](https://pypi.org/project/PyQt5/)
+[English](README_EN.md) | [![Version](https://img.shields.io/badge/Version-v1.0.1-blue.svg)](README.md) [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE) [![Python 3.8+](https://img.shields.io/badge/Python-3.8%2B-green.svg)](https://www.python.org/) [![PyQt5](https://img.shields.io/badge/GUI-PyQt5-orange.svg)](https://pypi.org/project/PyQt5/)
 
 将**像素蛋糕 (PixCake)** 的照片编辑数据转换为 Adobe Lightroom 可读取的 **XMP 附属文件**。
 
@@ -118,7 +118,8 @@ build.bat
 1. 创建 Python 虚拟环境
 2. 安装依赖 + PyInstaller
 3. 转换 `dist/icon.png` → `dist/icon.ico`
-4. 输出 `dist/PixCakeXmpConverter.exe`
+4. 从 `README.md` 读取版本号（badge 中的 `Version-vX.Y.Z`）
+5. 输出 `dist/PixCakeXmpConverter-vX.Y.Z.exe`
 
 > **注意：** 构建前需要自行准备 `dist/icon.png` 图标文件。
 
