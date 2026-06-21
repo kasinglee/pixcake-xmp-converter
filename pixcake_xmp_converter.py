@@ -1710,24 +1710,71 @@ class ConvertWorker(QObject):
     def _extract_curves(palette_data, mapped):
         """Extract tone curve data from paletteCfg ae arrays."""
         curve_map = {
-            21000: "",        # RGB combined
+            90068: "",        # RGB combined point curve
+            21000: "",        # RGB combined endpoint/fallback curve
             90069: "Red",     # Red channel
             90070: "Green",   # Green channel
             90071: "Blue",    # Blue channel
         }
-        params = palette_data.get("Common", {}).get("Params", [])
-        for param in params:
+        candidates = {}
+
+        def is_identity(points):
+            return points == [(0, 0), (255, 255)]
+
+        def parse_points(ae):
+            if not isinstance(ae, list) or len(ae) < 4 or len(ae) % 2 != 0:
+                return None
+
+            points = []
+            for i in range(0, len(ae), 2):
+                try:
+                    x = round(float(ae[i]))
+                    y = round(float(ae[i + 1]))
+                except (TypeError, ValueError):
+                    return None
+                # Lightroom point curves expect absolute 0..255 coordinates.
+                if not (0 <= x <= 255 and 0 <= y <= 255):
+                    return None
+                points.append((x, y))
+
+            points = sorted(dict(points).items())
+            return points if len(points) >= 2 else None
+
+        def add_candidate(param, source_priority):
+            if not isinstance(param, dict):
+                return
             pf = param.get("pf")
-            ae = param.get("ae")
-            if pf in curve_map and ae and isinstance(ae, list) and len(ae) >= 4:
-                suffix = curve_map[pf]
-                field = f"ToneCurvePV2012{suffix}"
-                # ae is flat: [x1,y1,x2,y2,...] → pair up
-                points = []
-                for i in range(0, len(ae) - 1, 2):
-                    points.append(f"{round(ae[i])}, {round(ae[i+1])}")
-                mapped[f"{field}__points"] = ";".join(points)
-                mapped["ToneCurveName2012"] = "Custom"
+            if pf not in curve_map:
+                return
+            points = parse_points(param.get("ae"))
+            if not points:
+                return
+            suffix = curve_map[pf]
+            field = f"ToneCurvePV2012{suffix}"
+            score = (
+                0 if is_identity(points) else 1,
+                len(points),
+                1 if pf == 90068 else 0,
+                source_priority,
+            )
+            current = candidates.get(field)
+            if current is None or score > current[0]:
+                candidates[field] = (score, points)
+
+        common_params = palette_data.get("Common", {}).get("Params", [])
+        after_effect_params = (
+            palette_data.get("AfterEffect", {}).get("Common", {}).get("Params", [])
+        )
+        for param in after_effect_params:
+            add_candidate(param, 0)
+        for param in common_params:
+            add_candidate(param, 1)
+
+        for field, (_, points) in candidates.items():
+            mapped[f"{field}__points"] = ";".join(
+                f"{x}, {y}" for x, y in points
+            )
+            mapped["ToneCurveName2012"] = "Custom"
 
 
 # ============================================================
