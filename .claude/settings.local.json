@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(sqlite3 *)",
+      "Bash(python -c \"import tkinter; print\\('tkinter OK'\\)\")",
+      "Bash(python -c \"import sqlite3; print\\('sqlite3 OK'\\)\")",
+      "Bash(python -c ' *)"
+    ]
+  }
+}
