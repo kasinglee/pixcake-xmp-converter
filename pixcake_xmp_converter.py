@@ -22,7 +22,7 @@ from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QLineEdit, QComboBox, QProgressBar,
     QScrollArea, QFrame, QFileDialog, QMessageBox, QSizePolicy,
-    QGridLayout, QSpacerItem, QStatusBar, QMenuBar, QAction,
+    QGridLayout, QSpacerItem, QStatusBar, QMenuBar, QAction, QListView,
     QCheckBox,
 )
 from PyQt5.QtCore import (
@@ -30,7 +30,7 @@ from PyQt5.QtCore import (
 )
 from PyQt5.QtGui import (
     QPixmap,
-    QCursor, QPainter,
+    QCursor, QPainter, QColor, QPen,
 )
 
 # ============================================================
@@ -48,6 +48,37 @@ CARD_H = 210
 CARD_GAP = 16
 THUMB_H = 140
 THUMB_PADDING = 10
+
+
+MESSAGE_BOX_QSS = """
+QMessageBox {
+    background-color: #1E1E1E;
+    color: #F5F5F7;
+}
+QMessageBox QLabel {
+    color: #F5F5F7;
+}
+QMessageBox QPushButton {
+    background-color: #2C2C2E;
+    color: #F5F5F7;
+    border: 1px solid #3A3A3C;
+    border-radius: 6px;
+    padding: 6px 14px;
+    min-width: 80px;
+}
+QMessageBox QPushButton:hover {
+    background-color: #3A3A3C;
+}
+"""
+
+
+def show_message(parent, icon, title, text):
+    msgbox = QMessageBox(parent)
+    msgbox.setWindowTitle(title)
+    msgbox.setIcon(icon)
+    msgbox.setText(text)
+    msgbox.setStyleSheet(MESSAGE_BOX_QSS)
+    return msgbox.exec()
 
 
 def pixcake_ts_to_datetime(ts_ms):
@@ -271,6 +302,13 @@ class PixCakeDB:
         self.db_dir = os.path.join(base_path, "db")
         self.project_dir = os.path.join(base_path, "project")
 
+    def _user_base_db_paths(self, user_id):
+        user_db_dir = os.path.join(self.db_dir, f"user_{user_id}", "db")
+        return [
+            os.path.join(user_db_dir, "user-base.db"),
+            os.path.join(user_db_dir, "personal", "user-base.db"),
+        ]
+
     def _proj_db_dir(self, project_id):
         pid = str(project_id)
         return f"project_{pid}" if not pid.startswith("project_") else pid
@@ -286,10 +324,31 @@ class PixCakeDB:
         conn = sqlite3.connect(base_db)
         conn.row_factory = sqlite3.Row
         try:
-            return [dict(u) for u in conn.execute(
-                "SELECT id, user_id, created_time, login_time FROM user")]
+            users = []
+            rows = conn.execute(
+                "SELECT id, user_id, merchant_id, organizationInfo, "
+                "created_time, login_time FROM user").fetchall()
+            for row in rows:
+                user = dict(row)
+                user["display_name"] = self._user_display_name(user)
+                users.append(user)
+            return users
         finally:
             conn.close()
+
+    @staticmethod
+    def _user_display_name(user):
+        org_info = user.get("organizationInfo")
+        if org_info:
+            try:
+                data = json.loads(org_info)
+                for org in data.get("org_list", []):
+                    name = org.get("organizationName")
+                    if name:
+                        return str(name)
+            except (TypeError, json.JSONDecodeError):
+                pass
+        return str(user.get("user_id") or "")
 
     def get_user_projects(self, user_id):
         user_dir = os.path.join(self.project_dir, f"user_{user_id}")
@@ -300,12 +359,42 @@ class PixCakeDB:
              if os.path.isdir(os.path.join(user_dir, e))],
             reverse=True)
 
-    def get_project_meta(self, user_id, project_id):
+    def get_project_records(self, user_id):
+        records = {}
+        for db_path in self._user_base_db_paths(user_id):
+            if not os.path.exists(db_path):
+                continue
+
+            conn = sqlite3.connect(db_path)
+            conn.row_factory = sqlite3.Row
+            try:
+                rows = conn.execute(
+                    "SELECT id, userId, name, update_time, created_time, "
+                    "disable FROM project"
+                ).fetchall()
+                for row in rows:
+                    records[str(row["id"])] = {
+                        "id": str(row["id"]),
+                        "user_id": str(row["userId"]),
+                        "name": row["name"] or "",
+                        "update_time": row["update_time"],
+                        "created_time": row["created_time"],
+                        "disable": bool(row["disable"]),
+                    }
+            finally:
+                conn.close()
+        return records
+
+    def get_project_meta(self, user_id, project_id, project_record=None):
         proj_db_dir = self._proj_db_dir(project_id)
         proj_cache_dir = self._proj_cache_dir(project_id)
         proj_db = os.path.join(self.db_dir, f"user_{user_id}",
                                proj_db_dir, "project.db")
-        result = {"name": f"Project {project_id}", "date": "",
+        project_name = ((project_record or {}).get("name")
+                        or f"Project {project_id}")
+        project_update = (project_record or {}).get("update_time")
+        result = {"name": project_name,
+                  "date": format_dt(pixcake_ts_to_datetime(project_update)) if project_update else "",
                   "count": 0, "thumbnail": None,
                   "user_id": user_id, "project_id": project_id}
 
@@ -331,7 +420,7 @@ class PixCakeDB:
                 parts = row[0].replace("\\", "/").split("/")
                 if len(parts) >= 2:
                     folders.add(parts[-2])
-            if folders:
+            if folders and not project_record:
                 result["name"] = "/".join(sorted(folders)[:2])
                 if result["count"]:
                     result["name"] += f"  ({result['count']})"
@@ -352,9 +441,28 @@ class PixCakeDB:
         all_projects = []
         for user in self.get_users():
             uid = user["user_id"]
-            for proj_dir in self.get_user_projects(uid):
-                pid = proj_dir.replace("project_", "")
-                all_projects.append(self.get_project_meta(uid, pid))
+            display_name = user.get("display_name") or str(uid)
+            project_records = self.get_project_records(uid)
+            if project_records:
+                active_records = [
+                    record for record in project_records.values()
+                    if not record.get("disable")
+                ]
+                active_records.sort(
+                    key=lambda record: record.get("update_time") or 0,
+                    reverse=True)
+                for record in active_records:
+                    meta = self.get_project_meta(uid, record["id"], record)
+                    if meta["count"]:
+                        meta["user_display_name"] = display_name
+                        all_projects.append(meta)
+            else:
+                for proj_dir in self.get_user_projects(uid):
+                    pid = proj_dir.replace("project_", "")
+                    meta = self.get_project_meta(uid, pid)
+                    if meta["count"]:
+                        meta["user_display_name"] = display_name
+                        all_projects.append(meta)
         return all_projects
 
     def get_project_images(self, user_id, project_id):
@@ -1093,34 +1201,59 @@ QMainWindow {
 
 /* ===== ComboBox ===== */
 QComboBox {
-    background-color: #2C2C2E;
+    background-color: #242426;
     border: 1px solid #3A3A3C;
-    border-radius: 8px;
-    padding: 6px 12px;
+    border-radius: 10px;
+    padding: 7px 34px 7px 12px;
     min-width: 140px;
-    color: #FFFFFF;
+    color: #F5F5F7;
+    font-size: 13px;
+    font-weight: 600;
 }
 QComboBox:hover {
-    background-color: #3A3A3C;
+    background-color: #2C2C2E;
     border-color: #48484A;
 }
 QComboBox:focus {
     border: 1px solid #0A84FF;
+    background-color: #2C2C2E;
 }
 QComboBox::drop-down {
     subcontrol-origin: padding;
     subcontrol-position: top right;
-    width: 24px;
+    width: 32px;
     border-left: none;
+    border-top-right-radius: 10px;
+    border-bottom-right-radius: 10px;
+}
+QComboBox::down-arrow {
+    image: none;
 }
 QComboBox QAbstractItemView {
-    background-color: #2C2C2E;
-    border: 1px solid #3A3A3C;
-    border-radius: 8px;
+    background-color: #1C1C1E;
+    border: 1px solid #48484A;
+    border-radius: 10px;
+    padding: 6px;
     selection-background-color: #0A84FF;
     selection-color: #FFFFFF;
-    color: #FFFFFF;
+    color: #F5F5F7;
     outline: none;
+}
+QComboBox QAbstractItemView::viewport {
+    background-color: #1C1C1E;
+    border-radius: 10px;
+}
+QComboBox QAbstractItemView::item {
+    min-height: 34px;
+    padding: 0 12px;
+    border-radius: 7px;
+}
+QComboBox QAbstractItemView::item:hover {
+    background-color: #2C2C2E;
+}
+QComboBox QAbstractItemView::item:selected {
+    background-color: #0A84FF;
+    color: #FFFFFF;
 }
 
 /* ===== PushButton ===== */
@@ -1197,6 +1330,7 @@ QLineEdit {
 }
 QLineEdit:hover {
     border-color: #48484A;
+    background-color: #3A3A3C;
 }
 QLineEdit:focus {
     border: 1px solid #0A84FF;
@@ -1234,21 +1368,19 @@ QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
 /* ===== Project Card ===== */
 #cardFrame {
     background-color: #1C1C1E;
-    border: 1px solid #2D2D2D;
+    border: none;
     border-radius: 12px;
 }
 #cardFrame:hover {
-    border-color: #48484A;
     background-color: #2C2C2E;
 }
 #cardFrame[selected="true"] {
-    border: 2px solid #0A84FF;
     background-color: #242C3E;
 }
 #cardThumb {
     background-color: #2C2C2E;
-    border-top-left-radius: 10px;
-    border-top-right-radius: 10px;
+    border-top-left-radius: 8px;
+    border-top-right-radius: 8px;
 }
 #cardName {
     font-size: 13px;
@@ -1595,9 +1727,24 @@ class SyncGroup(QFrame):
         self._arrow.setStyleSheet("color: #8E8E93; font-size: 10px; background: transparent;")
         h_layout.addWidget(self._arrow)
 
-        # Category checkbox
-        self._cat_cb = self._make_checkbox(self._title)
-        h_layout.addWidget(self._cat_cb, 1)
+        # Category checkbox only controls selection. The title row controls collapse.
+        self._cat_cb = self._make_checkbox("")
+        self._cat_cb.setCursor(QCursor(Qt.PointingHandCursor))
+        self._cat_cb.setFixedWidth(20)
+        h_layout.addWidget(self._cat_cb)
+
+        self._title_label = QLabel(self._title)
+        self._title_label.setCursor(QCursor(Qt.PointingHandCursor))
+        self._title_label.setStyleSheet("""
+            QLabel {
+                color: #F5F5F7;
+                font-size: 13px;
+                font-weight: 600;
+                background: transparent;
+            }
+        """)
+        self._title_label.mousePressEvent = self._on_header_click
+        h_layout.addWidget(self._title_label, 1)
 
         self._outer.addWidget(header)
 
@@ -1815,6 +1962,81 @@ class SyncSettingsSidebar(QFrame):
         return selected
 
 
+class DarkComboBox(QComboBox):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setCursor(QCursor(Qt.PointingHandCursor))
+        self.setMinimumHeight(34)
+
+        popup = QListView(self)
+        popup.setFrameShape(QFrame.NoFrame)
+        popup.setUniformItemSizes(True)
+        popup.setMouseTracking(True)
+        popup.setSpacing(4)
+        popup.setStyleSheet("""
+            QListView {
+                background-color: #1C1C1E;
+                border: 1px solid #48484A;
+                border-radius: 10px;
+                padding: 6px;
+                color: #F5F5F7;
+                outline: 0;
+            }
+            QListView::item {
+                min-height: 34px;
+                padding: 0 12px;
+                border-radius: 7px;
+            }
+            QListView::item:hover {
+                background-color: #2C2C2E;
+            }
+            QListView::item:selected {
+                background-color: #0A84FF;
+                color: #FFFFFF;
+            }
+        """)
+        self.setView(popup)
+        self.setMaxVisibleItems(7)
+
+    def showPopup(self):
+        self.view().setMinimumWidth(self.width())
+        if self.currentIndex() >= 0:
+            self.view().scrollTo(self.model().index(self.currentIndex(), 0))
+        super().showPopup()
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setPen(QPen(QColor("#AEAEB2"), 1.8))
+
+        center_x = self.width() - 18
+        center_y = self.height() // 2
+        painter.drawLine(center_x - 4, center_y - 2, center_x, center_y + 2)
+        painter.drawLine(center_x, center_y + 2, center_x + 4, center_y - 2)
+
+
+class CardBorderOverlay(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self.setAttribute(Qt.WA_NoSystemBackground, True)
+        self.setStyleSheet("background: transparent;")
+
+    def paintEvent(self, event):
+        card = self.parent()
+        selected = bool(getattr(card, "selected", False))
+        hovered = bool(getattr(card, "_hovered", False))
+        color = "#0A84FF" if selected else "#48484A" if hovered else "#2D2D2D"
+
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setPen(QPen(QColor(color), 2))
+        painter.setBrush(Qt.NoBrush)
+        rect = self.rect().adjusted(1, 1, -1, -1)
+        painter.drawRoundedRect(rect, 12, 12)
+
+
 # ============================================================
 # Project Card Widget
 # ============================================================
@@ -1831,19 +2053,20 @@ class ProjectCard(QFrame):
         super().__init__(parent)
         self.meta = meta
         self._selected = False
+        self._hovered = False
         self._thumb_pixmap = None
         self.setObjectName("cardFrame")
         self.setFixedSize(CARD_W, CARD_H)
         self.setCursor(QCursor(Qt.PointingHandCursor))
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setContentsMargins(2, 2, 2, 2)
         layout.setSpacing(0)
 
         # Thumbnail
         self.thumb = QLabel()
         self.thumb.setObjectName("cardThumb")
-        self.thumb.setFixedSize(CARD_W, THUMB_H)
+        self.thumb.setFixedSize(CARD_W - 4, THUMB_H)
         self.thumb.setAlignment(Qt.AlignCenter)
         self.thumb.setScaledContents(False)
         layout.addWidget(self.thumb)
@@ -1860,7 +2083,11 @@ class ProjectCard(QFrame):
         self.name_label.setWordWrap(True)
         self.name_label.setMaximumHeight(38)
 
-        self.date_label = QLabel(meta.get("date", ""))
+        details = meta.get("date", "")
+        count = meta.get("count") or 0
+        if count:
+            details = f"{details} · {count} 张" if details else f"{count} 张"
+        self.date_label = QLabel(details)
         self.date_label.setObjectName("cardDate")
 
         text_layout.addWidget(self.name_label)
@@ -1882,8 +2109,13 @@ class ProjectCard(QFrame):
         )
         self.select_badge.setText("✓")
         self.select_badge.setAlignment(Qt.AlignCenter)
-        self.select_badge.move(CARD_W - 30, 8)
+        self.select_badge.move(CARD_W - 36, 10)
         self.select_badge.setVisible(False)
+
+        self.border_overlay = CardBorderOverlay(self)
+        self.border_overlay.setGeometry(self.rect())
+        self.border_overlay.raise_()
+        self.select_badge.raise_()
 
         # Load thumbnail in background
         self._load_thumbnail()
@@ -1893,8 +2125,11 @@ class ProjectCard(QFrame):
         if width == self.width():
             return
         self.setFixedSize(width, CARD_H)
-        self.thumb.setFixedSize(width, THUMB_H)
-        self.select_badge.move(width - 30, 8)
+        self.thumb.setFixedSize(max(1, width - 4), THUMB_H)
+        self.select_badge.move(width - 36, 10)
+        self.border_overlay.setGeometry(self.rect())
+        self.border_overlay.raise_()
+        self.select_badge.raise_()
         self._refresh_thumbnail()
 
     def _load_thumbnail(self):
@@ -1906,7 +2141,14 @@ class ProjectCard(QFrame):
             except Exception:
                 self.thumb.setText("📷 Error")
         else:
-            self.thumb.setStyleSheet("background-color: #2C2C2E; color: #8E8E93; font-weight: 500; font-size: 14px;")
+            self.thumb.setStyleSheet(
+                "background-color: #2C2C2E;"
+                "color: #8E8E93;"
+                "font-weight: 500;"
+                "font-size: 14px;"
+                "border-top-left-radius: 8px;"
+                "border-top-right-radius: 8px;"
+            )
             self.thumb.setText("📁 空白项目")
 
     def _refresh_thumbnail(self):
@@ -1932,6 +2174,24 @@ class ProjectCard(QFrame):
         self.select_badge.setVisible(val)
         self.style().unpolish(self)
         self.style().polish(self)
+        self.border_overlay.update()
+
+    def enterEvent(self, event):
+        self._hovered = True
+        self.border_overlay.update()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self._hovered = False
+        self.border_overlay.update()
+        super().leaveEvent(event)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, "border_overlay"):
+            self.border_overlay.setGeometry(self.rect())
+            self.border_overlay.raise_()
+            self.select_badge.raise_()
 
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
@@ -2065,7 +2325,7 @@ class MainWindow(QMainWindow):
         user_label.setStyleSheet("font-weight: 600; color: #AEAEB2;")
         tb_layout.addWidget(user_label)
 
-        self.user_combo = QComboBox()
+        self.user_combo = DarkComboBox()
         self.user_combo.setMinimumWidth(140)
         self.user_combo.currentIndexChanged.connect(self._on_user_changed)
         tb_layout.addWidget(self.user_combo)
@@ -2195,9 +2455,17 @@ class MainWindow(QMainWindow):
 
         # Collect unique user IDs
         user_ids = list(dict.fromkeys(p["user_id"] for p in projects))
+        user_labels = []
+        for uid in user_ids:
+            label = next(
+                (p.get("user_display_name") for p in projects
+                 if p["user_id"] == uid and p.get("user_display_name")),
+                f"User {uid}")
+            user_labels.append(label)
+
         self.user_combo.blockSignals(True)
         self.user_combo.clear()
-        self.user_combo.addItems([f"User {u}" for u in user_ids])
+        self.user_combo.addItems(user_labels)
         self.user_combo.setCurrentIndex(0)
         self.user_combo.blockSignals(False)
 
@@ -2355,18 +2623,21 @@ class MainWindow(QMainWindow):
 
     def _convert(self):
         if not self.selected_cards:
-            QMessageBox.warning(self, "未选择", "请先选择至少一个项目")
+            show_message(self, QMessageBox.Warning, "未选择",
+                         "请先选择至少一个项目")
             return
 
         output_dir = self.out_path.text().strip()
         if not output_dir:
-            QMessageBox.critical(self, "错误", "请指定输出文件夹")
+            show_message(self, QMessageBox.Critical, "错误",
+                         "请指定输出文件夹")
             return
         if not os.path.exists(output_dir):
             try:
                 os.makedirs(output_dir)
             except OSError as e:
-                QMessageBox.critical(self, "错误", f"无法创建文件夹:\n{e}")
+                show_message(self, QMessageBox.Critical, "错误",
+                             f"无法创建文件夹:\n{e}")
                 return
 
         selected_metas = [card.meta for card in self.selected_cards]
@@ -2397,6 +2668,7 @@ class MainWindow(QMainWindow):
             msgbox.setText(
                 f"发现 {len(existing_files)} 个 XMP 文件已存在：\n\n{preview}\n\n如何处理？")
             msgbox.setIcon(QMessageBox.Question)
+            msgbox.setStyleSheet(MESSAGE_BOX_QSS)
             overwrite_btn = msgbox.addButton("覆盖全部", QMessageBox.YesRole)
             skip_btn = msgbox.addButton("跳过已存在", QMessageBox.NoRole)
             cancel_btn = msgbox.addButton("取消", QMessageBox.RejectRole)
@@ -2444,14 +2716,7 @@ class MainWindow(QMainWindow):
                 msg += "\n\n" + "\n".join(errors[:8]) + \
                        f"\n...及其他 {len(errors) - 8} 个错误"
 
-        QMessageBox.information(self, "转换完成", msg)
-
-        output_dir = self.out_path.text().strip()
-        if success > 0 and output_dir:
-            try:
-                os.startfile(output_dir)
-            except Exception:
-                pass
+        show_message(self, QMessageBox.Information, "转换完成", msg)
 
 
 # ============================================================
