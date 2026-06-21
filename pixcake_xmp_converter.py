@@ -15,6 +15,7 @@ import threading
 import xml.etree.ElementTree as ET
 from xml.dom import minidom
 from datetime import datetime, timezone, timedelta
+from fractions import Fraction
 from pathlib import Path
 
 from PyQt5.QtWidgets import (
@@ -451,6 +452,106 @@ def read_raw_metadata(filepath):
 # XMP Generator
 # ============================================================
 
+def _to_rational_str(value):
+    """Convert EXIF display format to XMP rational string.
+
+    "f/4" → "4/1",  "75 mm" → "75/1",  "0 EV" → "0/1",
+    "1/2500" → "1/2500" (already rational).
+    """
+    if value is None:
+        return None
+    v = str(value).strip()
+    # Already a rational like "1/2500", "+1/3", "4/1"
+    if re.match(r'^[+-]?\d+/\d+$', v):
+        return v
+    # Strip common units
+    v = re.sub(r'\s*(mm|EV|sec|s)\s*$', '', v, flags=re.IGNORECASE).strip()
+    # Strip "f/" prefix  (f/4, f/5.6)
+    v = re.sub(r'^f/', '', v).strip()
+    if v == "0":
+        return "0/1"
+    try:
+        num = float(v)
+        if num == int(num):
+            return f"{int(num)}/1"
+        # Fractional aperture: f/1.8 → represent as rational
+        frac = Fraction(num).limit_denominator(100)
+        return f"{frac.numerator}/{frac.denominator}"
+    except (ValueError, ImportError):
+        return str(value)
+
+
+def _to_lens_info_rational(value):
+    """Convert comma-separated lens specs to rational format.
+
+    "70,200,0,0" → "70/1 200/1 0/0 0/0"
+    """
+    if value is None:
+        return None
+    v = str(value).replace(" ", "")
+    result = []
+    for p in v.split(","):
+        try:
+            result.append(f"{int(float(p))}/1")
+        except (ValueError, TypeError):
+            result.append(p)
+    return " ".join(result)
+
+
+def _parse_orientation_from_raw(raw_meta):
+    """Extract EXIF orientation value from raw metadata dict.
+
+    Returns int 1-8, or None if not found.
+    """
+    if not raw_meta:
+        return None
+    for rk, rv in raw_meta.items():
+        if "orientation" in rk.lower():
+            v = str(rv).strip()
+            # "8" or "Rotated 90 CW" or "Horizontal (normal)"
+            try:
+                return int(v.split()[0])
+            except ValueError:
+                # Map common textual descriptions
+                mapping = {
+                    "horizontal": 1, "normal": 1, "top-left": 1,
+                    "mirror": 2, "top-right": 2,
+                    "rotate": None,  # need full phrase
+                    "rotated": None,
+                }
+                v_lower = v.lower()
+                if "180" in v_lower:
+                    return 3
+                if "90" in v_lower and "cw" in v_lower:
+                    return 6
+                if "90" in v_lower and "ccw" in v_lower:
+                    return 8
+                if "270" in v_lower:
+                    return 8
+                return None
+    return None
+
+
+def _parse_raw_dimensions(raw_meta):
+    """Extract image dimensions from raw metadata dict (sensor order).
+
+    Returns (width, height) tuple, or (None, None).
+    """
+    if not raw_meta:
+        return None, None
+    w = h = None
+    for rk, rv in raw_meta.items():
+        key_clean = rk.lower().replace(" ", "").replace("image", "")
+        try:
+            if key_clean == "width" and "pixel" not in rk.lower():
+                w = int(float(str(rv)))
+            if key_clean == "length" and "pixel" not in rk.lower():
+                h = int(float(str(rv)))
+        except (ValueError, TypeError):
+            pass
+    return w, h
+
+
 def generate_xmp(image_info, crs_fields, raw_metadata=None, exif_data=None):
     NS = {
         "x": "adobe:ns:meta/",
@@ -496,10 +597,13 @@ def generate_xmp(image_info, crs_fields, raw_metadata=None, exif_data=None):
     desc.set(f"{{{NS['xmp']}}}MetadataDate", now)
 
     if image_info.get("capture_dt"):
-        cd = image_info["capture_dt"].strftime("%Y-%m-%dT%H:%M:%S.00+08:00")
-        desc.set(f"{{{NS['xmp']}}}CreateDate", cd)
-        desc.set(f"{{{NS['photoshop']}}}DateCreated", cd)
-        desc.set(f"{{{NS['exif']}}}DateTimeOriginal", cd)
+        # capture_dt is UTC-aware; convert to CST before formatting
+        local_dt = image_info["capture_dt"].astimezone(CST)
+        cd_tz = local_dt.strftime("%Y-%m-%dT%H:%M:%S+08:00")
+        cd_no_tz = local_dt.strftime("%Y-%m-%dT%H:%M:%S")
+        desc.set(f"{{{NS['xmp']}}}CreateDate", cd_tz)
+        desc.set(f"{{{NS['photoshop']}}}DateCreated", cd_no_tz)
+        desc.set(f"{{{NS['exif']}}}DateTimeOriginal", cd_no_tz)
 
     rating = crs_fields.pop("Rating", None)
     if rating is not None:
@@ -523,14 +627,37 @@ def generate_xmp(image_info, crs_fields, raw_metadata=None, exif_data=None):
         v = get_val(ek)
         if v:
             desc.set(ns_key, v)
+    # ---- Orientation ----
+    # Prefer raw-file EXIF orientation (sensor-native); fall back to PixCake rotation
+    raw_orient = _parse_orientation_from_raw(raw_meta)
     orientation = crs_fields.pop("Orientation", "1")
-    desc.set(f"{{{NS['tiff']}}}Orientation", str(orientation))
+    if raw_orient is not None and 1 <= raw_orient <= 8:
+        orientation = str(raw_orient)
+    desc.set(f"{{{NS['tiff']}}}Orientation", orientation)
 
-    w, h = image_info.get("originalWidth", 0) or 0, image_info.get("originalHeight", 0) or 0
+    # ---- Dimensions ----
+    # Use raw-file sensor dimensions when available; otherwise derive from PixCake data
+    raw_w, raw_h = _parse_raw_dimensions(raw_meta)
+    orig_w = image_info.get("originalWidth", 0) or 0
+    orig_h = image_info.get("originalHeight", 0) or 0
+    if raw_w and raw_h:
+        w, h = raw_w, raw_h
+    elif orientation in ("5", "6", "7", "8") and orig_w and orig_h:
+        # Orientation indicates rotation; PixCake stores display dims → swap for sensor order
+        w, h = orig_h, orig_w
+    else:
+        w, h = orig_w, orig_h
     if w and h:
         desc.set(f"{{{NS['tiff']}}}ImageWidth", str(w))
         desc.set(f"{{{NS['tiff']}}}ImageLength", str(h))
+    desc.set(f"{{{NS['exif']}}}PixelXDimension", str(w))
+    desc.set(f"{{{NS['exif']}}}PixelYDimension", str(h))
 
+    # EXIF fields that should be written in rational (n/d) format
+    _RATIONAL_FIELDS = {
+        "ExposureTime", "FNumber", "ApertureValue",
+        "ExposureBiasValue", "FocalLength",
+    }
     for ns_key, ek in [
         (f"{{{NS['exif']}}}ExifVersion", "ExifVersion"),
         (f"{{{NS['exif']}}}ExposureTime", "ExposureTime"),
@@ -544,7 +671,7 @@ def generate_xmp(image_info, crs_fields, raw_metadata=None, exif_data=None):
     ]:
         v = get_val(ek)
         if v:
-            desc.set(ns_key, v)
+            desc.set(ns_key, _to_rational_str(v) if ek in _RATIONAL_FIELDS else str(v))
 
     iso = get_val("ISOSpeedRatings")
     if iso:
@@ -553,12 +680,8 @@ def generate_xmp(image_info, crs_fields, raw_metadata=None, exif_data=None):
         li = ET.SubElement(seq, f"{{{NS['rdf']}}}li")
         li.text = str(iso)
 
-    desc.set(f"{{{NS['exif']}}}PixelXDimension", str(w))
-    desc.set(f"{{{NS['exif']}}}PixelYDimension", str(h))
-
     for ns_key, ek in [
         (f"{{{NS['aux']}}}SerialNumber", "SerialNumber"),
-        (f"{{{NS['aux']}}}LensInfo", "LensSpecification"),
         (f"{{{NS['aux']}}}Lens", "LensModel"),
         (f"{{{NS['exifEX']}}}LensModel", "LensModel"),
         (f"{{{NS['aux']}}}LensSerialNumber", "LensSerialNumber"),
@@ -566,6 +689,11 @@ def generate_xmp(image_info, crs_fields, raw_metadata=None, exif_data=None):
         v = get_val(ek)
         if v:
             desc.set(ns_key, str(v))
+
+    # LensInfo / LensSpecification — convert to rational format
+    lens_info = get_val("LensSpecification")
+    if lens_info:
+        desc.set(f"{{{NS['aux']}}}LensInfo", _to_lens_info_rational(lens_info))
 
     raw_ext = os.path.splitext(image_info.get("originalImagePath", ""))[1]
     desc.set(f"{{{NS['photoshop']}}}SidecarForExtension",
@@ -607,6 +735,10 @@ def generate_xmp(image_info, crs_fields, raw_metadata=None, exif_data=None):
         "HDREditMode": "0", "CurveRefineSaturation": "100",
         "OverrideLookVignette": "False", "CameraProfile": "Adobe Standard",
         "HasSettings": "True", "AlreadyApplied": "False", "AllowFilters": "1",
+        # Default full-frame crop (no-op)
+        "CropTop": "0", "CropLeft": "0",
+        "CropBottom": "1", "CropRight": "1",
+        "CropAngle": "0", "CropConstrainToUnitSquare": "1",
     }
     for field, value in defaults.items():
         if field not in crs_fields:
