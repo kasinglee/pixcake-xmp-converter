@@ -23,13 +23,13 @@ from PyQt5.QtWidgets import (
     QLabel, QPushButton, QLineEdit, QComboBox, QProgressBar,
     QScrollArea, QFrame, QFileDialog, QMessageBox, QSizePolicy,
     QGridLayout, QSpacerItem, QStatusBar, QMenuBar, QAction,
-    QTreeWidget, QTreeWidgetItem,
+    QCheckBox,
 )
 from PyQt5.QtCore import (
     Qt, QThread, pyqtSignal, QObject, QTimer, QSize, QPoint, QRect,
 )
 from PyQt5.QtGui import (
-    QFont, QPixmap, QImage, QPalette, QColor, QIcon,
+    QPixmap,
     QCursor, QPainter,
 )
 
@@ -1058,33 +1058,30 @@ QMainWindow {
     padding-left: 8px;
 }
 
-/* Apple style traffic lights */
+/* Windows-style title bar buttons */
 #btnMin, #btnMax, #btnClose {
     border: none;
-    border-radius: 6px;
+    border-radius: 4px;
     padding: 0;
-    min-width: 12px;
-    min-height: 12px;
-    max-width: 12px;
-    max-height: 12px;
+    min-width: 46px;
+    min-height: 32px;
+    max-width: 46px;
+    max-height: 32px;
+    font-size: 10px;
+    font-weight: 400;
+    color: #CCCCCC;
+    background-color: transparent;
 }
-#btnClose {
-    background-color: #FF5F56;
+#btnMin:hover, #btnMax:hover {
+    background-color: #3A3A3C;
+    color: #FFFFFF;
 }
 #btnClose:hover {
-    background-color: #E0443E;
+    background-color: #C42B1C;
+    color: #FFFFFF;
 }
-#btnMin {
-    background-color: #FFBD2E;
-}
-#btnMin:hover {
-    background-color: #DEA123;
-}
-#btnMax {
-    background-color: #27C93F;
-}
-#btnMax:hover {
-    background-color: #1AAB29;
+#btnClose {
+    border-top-right-radius: 8px;
 }
 
 /* ===== Top Toolbar ===== */
@@ -1558,39 +1555,147 @@ class ConvertWorker(QObject):
 
 
 # ============================================================
-# Sync Settings Selector Widgets
-# ============================================================
-
-# ============================================================
 # Sync Settings Selector Widgets (Sidebar version)
 # ============================================================
 
-class CustomTreeWidget(QTreeWidget):
-    def __init__(self, parent=None):
+class SyncGroup(QFrame):
+    """Collapsible rounded-border group containing a category header and option checkboxes."""
+
+    state_changed = pyqtSignal()
+
+    def __init__(self, title, options_dict, parent=None):
         super().__init__(parent)
-        self.setHeaderHidden(True)
-        self.setFocusPolicy(Qt.NoFocus)
-        self.setIndentation(18)
-        self.setObjectName("syncTree")
-        
-    def mousePressEvent(self, event):
-        item = self.itemAt(event.pos())
-        if item:
-            # If the user clicked to the right of the checkbox indicator, collapse/expand the parent item
-            indent = self.indentation()
-            level = 0
-            p = item.parent()
-            while p:
-                level += 1
-                p = p.parent()
-            
-            checkbox_right_edge = (level * indent) + 26
-            if event.pos().x() > checkbox_right_edge:
-                if item.childCount() > 0:
-                    item.setExpanded(not item.isExpanded())
-                    event.accept()
-                    return
-        super().mousePressEvent(event)
+        self.setObjectName("syncGroup")
+        self._title = title
+        self._options = options_dict  # {opt_label: field_list}
+        self._collapsed = True
+        self._updating = False
+
+        self._build_ui()
+
+    # ------------------------------------------------------------------
+    def _build_ui(self):
+        self._outer = QVBoxLayout(self)
+        self._outer.setContentsMargins(0, 0, 0, 0)
+        self._outer.setSpacing(0)
+
+        # ---- Header row ----
+        header = QWidget()
+        header.setObjectName("syncGroupHeader")
+        header.setCursor(QCursor(Qt.PointingHandCursor))
+        header.mousePressEvent = self._on_header_click
+
+        h_layout = QHBoxLayout(header)
+        h_layout.setContentsMargins(10, 8, 10, 8)
+        h_layout.setSpacing(8)
+
+        # Collapse arrow
+        self._arrow = QLabel("▶")
+        self._arrow.setFixedWidth(14)
+        self._arrow.setStyleSheet("color: #8E8E93; font-size: 10px; background: transparent;")
+        h_layout.addWidget(self._arrow)
+
+        # Category checkbox
+        self._cat_cb = self._make_checkbox(self._title)
+        h_layout.addWidget(self._cat_cb, 1)
+
+        self._outer.addWidget(header)
+
+        # ---- Content area (collapsed by default) ----
+        self._content = QWidget()
+        self._content.setObjectName("syncGroupContent")
+        self._content.setVisible(False)
+        c_layout = QVBoxLayout(self._content)
+        c_layout.setContentsMargins(12, 6, 12, 10)
+        c_layout.setSpacing(8)
+
+        self._opt_checkboxes = {}
+        for opt_label, fields in self._options.items():
+            cb = self._make_checkbox(opt_label)
+            c_layout.addWidget(cb)
+            self._opt_checkboxes[opt_label] = (cb, fields)
+
+        self._outer.addWidget(self._content)
+
+        # ---- Connect signals ----
+        self._cat_cb.stateChanged.connect(self._on_cat_toggled)
+
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _make_checkbox(text):
+        cb = QCheckBox(text)
+        cb.setChecked(True)
+        cb.setStyleSheet("""
+            QCheckBox {
+                color: #F5F5F7;
+                font-size: 13px;
+                spacing: 8px;
+                background: transparent;
+            }
+            QCheckBox::indicator {
+                width: 16px;
+                height: 16px;
+            }
+        """)
+        return cb
+
+    # ------------------------------------------------------------------
+    def _on_header_click(self, event):
+        self.set_collapsed(not self._collapsed)
+
+    def _on_cat_toggled(self, state):
+        if self._updating:
+            return
+        self._updating = True
+        checked = (state == Qt.Checked)
+        for cb, _ in self._opt_checkboxes.values():
+            cb.setChecked(checked)
+        self._updating = False
+        self.state_changed.emit()
+
+    def _on_opt_toggled(self):
+        if self._updating:
+            return
+        self._updating = True
+        self._sync_cat_state()
+        self._updating = False
+        self.state_changed.emit()
+
+    def _sync_cat_state(self):
+        checked = 0
+        total = len(self._opt_checkboxes)
+        for cb, _ in self._opt_checkboxes.values():
+            if cb.isChecked():
+                checked += 1
+        if checked == total:
+            self._cat_cb.setCheckState(Qt.Checked)
+        elif checked == 0:
+            self._cat_cb.setCheckState(Qt.Unchecked)
+        else:
+            self._cat_cb.setCheckState(Qt.PartiallyChecked)
+
+    # ------------------------------------------------------------------
+    def set_collapsed(self, collapsed):
+        self._collapsed = collapsed
+        self._content.setVisible(not collapsed)
+        self._arrow.setText("▶" if collapsed else "▼")
+
+    def set_all_checked(self, checked):
+        self._updating = True
+        for cb, _ in self._opt_checkboxes.values():
+            cb.setChecked(checked)
+        self._cat_cb.setCheckState(Qt.Checked if checked else Qt.Unchecked)
+        self._updating = False
+
+    def are_all_checked(self):
+        return all(cb.isChecked() for cb, _ in self._opt_checkboxes.values())
+
+    def get_checked_fields(self):
+        fields = set()
+        for cb, f_list in self._opt_checkboxes.values():
+            if cb.isChecked():
+                fields.update(f_list)
+        return fields
 
 
 class SyncSettingsSidebar(QFrame):
@@ -1598,221 +1703,115 @@ class SyncSettingsSidebar(QFrame):
         super().__init__(parent)
         self.setObjectName("syncSidebar")
         self.setFixedWidth(280)
-        
+
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(12)
-        
-        # Title of the Sidebar
+        layout.setContentsMargins(0, 16, 0, 16)
+        layout.setSpacing(10)
+
+        # ---- Title header ----
         header_layout = QHBoxLayout()
-        header_layout.setContentsMargins(0, 0, 0, 0)
-        
+        header_layout.setContentsMargins(16, 0, 16, 0)
+        header_layout.setSpacing(0)
+
         title_label = QLabel("同步设置")
         title_label.setStyleSheet("font-size: 14px; font-weight: 700; color: #FFFFFF;")
         header_layout.addWidget(title_label)
-        
-        self.info_lbl = QLabel("全选")
-        self.info_lbl.setStyleSheet("font-size: 11px; color: #8E8E93;")
-        header_layout.addWidget(self.info_lbl, 0, Qt.AlignRight | Qt.AlignVCenter)
-        
+        header_layout.addStretch()
+
+        self.select_all_btn = QPushButton("全选")
+        self.select_all_btn.setObjectName("btnGhost")
+        self.select_all_btn.setStyleSheet(
+            "QPushButton#btnGhost { font-size: 13px; font-weight: 600; }"
+        )
+        self.select_all_btn.clicked.connect(self._toggle_select_all)
+        header_layout.addWidget(self.select_all_btn)
+
         layout.addLayout(header_layout)
-        
-        # CustomTreeWidget for hierarchical checkboxes
-        self.tree = CustomTreeWidget()
-        layout.addWidget(self.tree)
-        
-        # Apply style matching the general app QSS and rounded corners
+
+        # ---- Scroll area for groups ----
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setStyleSheet("""
+            QScrollArea { background-color: transparent; border: none; }
+            QScrollBar:vertical { background-color: transparent; width: 6px; margin: 2px; }
+            QScrollBar::handle:vertical { background-color: #3A3A3C; border-radius: 3px; min-height: 20px; }
+            QScrollBar::handle:vertical:hover { background-color: #48484A; }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; width: 0; }
+            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }
+        """)
+
+        self._groups_container = QWidget()
+        self._groups_container.setObjectName("groupsContainer")
+        self._groups_container.setStyleSheet(
+            "#groupsContainer { background-color: #1C1C1E; }"
+        )
+        self._groups_layout = QVBoxLayout(self._groups_container)
+        self._groups_layout.setContentsMargins(14, 8, 14, 8)
+        self._groups_layout.setSpacing(8)
+        self._groups_layout.addStretch()
+
+        scroll.setWidget(self._groups_container)
+        layout.addWidget(scroll, 1)
+
+        # ---- Sidebar QSS ----
         self.setStyleSheet("""
             QFrame#syncSidebar {
                 background-color: #1C1C1E;
                 border-left: 1px solid #2D2D2D;
             }
-            QTreeWidget#syncTree {
+            QFrame#syncGroup {
+                background-color: #1E1E20;
+                border: 1px solid #2D2D2D;
+                border-radius: 10px;
+            }
+            #syncGroupHeader {
                 background-color: transparent;
-                border: none;
-                color: #FFFFFF;
-                outline: none;
             }
-            QTreeWidget#syncTree::item {
-                padding: 6px;
-                color: #F5F5F7;
-                margin-top: 1px;
-                margin-bottom: 1px;
-            }
-            QTreeWidget#syncTree::indicator {
-                width: 14px;
-                height: 14px;
-            }
-            QScrollBar:vertical {
+            #syncGroupContent {
                 background-color: transparent;
-                width: 6px;
-                margin: 2px;
-            }
-            QScrollBar::handle:vertical {
-                background-color: #3A3A3C;
-                border-radius: 3px;
-                min-height: 20px;
-            }
-            QScrollBar::handle:vertical:hover {
-                background-color: #48484A;
-            }
-            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
-                height: 0; width: 0;
-            }
-            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
-                background: transparent;
             }
         """)
-        
-        # Populate the tree
-        self._build_tree()
-        
-        self.tree.itemChanged.connect(self._on_item_changed)
-        
-    def _build_tree(self):
-        self.tree.blockSignals(True)
-        
-        # Top-level "全选所有" item
-        self.all_item = QTreeWidgetItem(self.tree)
-        self.all_item.setText(0, "全选所有")
-        self.all_item.setFlags(self.all_item.flags() | Qt.ItemIsUserCheckable)
-        self.all_item.setCheckState(0, Qt.Checked)
-        
-        # Add subtle color styling to "全选所有"
-        self.all_item.setBackground(0, QColor("#2A2A2D"))
-        self.all_item.setFont(0, QFont("", -1, QFont.Bold))
-        
+
+        # ---- Populate groups ----
+        self._groups = []
         for cat_name, options in SYNC_HIERARCHY.items():
-            cat_item = QTreeWidgetItem(self.tree)
-            cat_item.setText(0, cat_name)
-            cat_item.setFlags(cat_item.flags() | Qt.ItemIsUserCheckable)
-            cat_item.setCheckState(0, Qt.Checked)
-            
-            # Subtle background color for Level 1 categories
-            cat_item.setBackground(0, QColor("#242427"))
-            cat_item.setFont(0, QFont("", -1, QFont.DemiBold))
-            
-            for opt_name, fields in options.items():
-                opt_item = QTreeWidgetItem(cat_item)
-                opt_item.setText(0, opt_name)
-                opt_item.setFlags(opt_item.flags() | Qt.ItemIsUserCheckable)
-                opt_item.setCheckState(0, Qt.Checked)
-                opt_item.setData(0, Qt.UserRole, fields)
-                
-                # Subtle background/font color for Level 2 options (slightly darker, lighter text)
-                opt_item.setBackground(0, QColor("#1C1C1E"))
-                opt_item.setFont(0, QFont("", -1, QFont.Normal))
-                
-        self.tree.expandAll()
-        self.tree.blockSignals(False)
-        self.update_info_text()
+            group = SyncGroup(cat_name, options)
+            group.state_changed.connect(self._update_select_all_button)
+            self._groups.append(group)
+            self._groups_layout.insertWidget(self._groups_layout.count() - 1, group)
 
-    def _on_item_changed(self, item, column):
-        self.tree.blockSignals(True)
-        try:
-            state = item.checkState(0)
-            
-            if item == self.all_item:
-                # Set all categories and children to match 'all_item'
-                for i in range(self.tree.topLevelItemCount()):
-                    cat_item = self.tree.topLevelItem(i)
-                    if cat_item == self.all_item:
-                        continue
-                    cat_item.setCheckState(0, state)
-                    for j in range(cat_item.childCount()):
-                        cat_item.child(j).setCheckState(0, state)
-            
-            elif item.parent() is None:
-                # It's a category item. Update all its children.
-                for j in range(item.childCount()):
-                    item.child(j).setCheckState(0, state)
-                # Update 'all_item'
-                self._recalculate_all_item_state()
-                
-            else:
-                # It's a child item. Update its parent category, then update 'all_item'
-                parent = item.parent()
-                self._recalculate_parent_state(parent)
-                self._recalculate_all_item_state()
-                
-        finally:
-            self.tree.blockSignals(False)
-            
-        self.update_info_text()
+        # Connect child checkboxes to parent sync
+        for group in self._groups:
+            for cb, _ in group._opt_checkboxes.values():
+                cb.stateChanged.connect(group._on_opt_toggled)
 
-    def _recalculate_parent_state(self, parent_item):
-        checked_count = 0
-        unchecked_count = 0
-        child_count = parent_item.childCount()
-        
-        for i in range(child_count):
-            state = parent_item.child(i).checkState(0)
-            if state == Qt.Checked:
-                checked_count += 1
-            elif state == Qt.Unchecked:
-                unchecked_count += 1
-                
-        if checked_count == child_count:
-            parent_item.setCheckState(0, Qt.Checked)
-        elif unchecked_count == child_count:
-            parent_item.setCheckState(0, Qt.Unchecked)
+        self._update_select_all_button()
+
+    # ------------------------------------------------------------------
+    def _toggle_select_all(self):
+        all_checked = all(g.are_all_checked() for g in self._groups)
+        new_state = not all_checked
+        for group in self._groups:
+            group.set_all_checked(new_state)
+        self._update_select_all_button()
+
+    def _update_select_all_button(self):
+        total = sum(len(g._opt_checkboxes) for g in self._groups)
+        checked = sum(
+            sum(1 for cb, _ in g._opt_checkboxes.values() if cb.isChecked())
+            for g in self._groups
+        )
+        if checked == total and total > 0:
+            self.select_all_btn.setText("取消全选")
         else:
-            parent_item.setCheckState(0, Qt.PartiallyChecked)
-
-    def _recalculate_all_item_state(self):
-        checked_count = 0
-        unchecked_count = 0
-        total_cats = self.tree.topLevelItemCount() - 1 # exclude all_item
-        
-        for i in range(self.tree.topLevelItemCount()):
-            cat_item = self.tree.topLevelItem(i)
-            if cat_item == self.all_item:
-                continue
-            state = cat_item.checkState(0)
-            if state == Qt.Checked:
-                checked_count += 1
-            elif state == Qt.Unchecked:
-                unchecked_count += 1
-                
-        if checked_count == total_cats:
-            self.all_item.setCheckState(0, Qt.Checked)
-        elif unchecked_count == total_cats:
-            self.all_item.setCheckState(0, Qt.Unchecked)
-        else:
-            self.all_item.setCheckState(0, Qt.PartiallyChecked)
-
-    def update_info_text(self):
-        checked_count = 0
-        total_count = 0
-        
-        for i in range(self.tree.topLevelItemCount()):
-            cat_item = self.tree.topLevelItem(i)
-            if cat_item == self.all_item:
-                continue
-            for j in range(cat_item.childCount()):
-                total_count += 1
-                if cat_item.child(j).checkState(0) == Qt.Checked:
-                    checked_count += 1
-                    
-        if checked_count == total_count:
-            self.info_lbl.setText("全选")
-        elif checked_count == 0:
-            self.info_lbl.setText("未选择")
-        else:
-            self.info_lbl.setText(f"已选 {checked_count}/{total_count}")
+            self.select_all_btn.setText("全选")
 
     def get_selected_fields(self):
         selected = set()
-        for i in range(self.tree.topLevelItemCount()):
-            cat_item = self.tree.topLevelItem(i)
-            if cat_item == self.all_item:
-                continue
-            for j in range(cat_item.childCount()):
-                opt_item = cat_item.child(j)
-                if opt_item.checkState(0) == Qt.Checked:
-                    fields = opt_item.data(0, Qt.UserRole)
-                    if fields:
-                        selected.update(fields)
+        for group in self._groups:
+            selected.update(group.get_checked_fields())
         return selected
 
 
@@ -1955,34 +1954,37 @@ class TitleBar(QWidget):
         layout.setContentsMargins(16, 0, 16, 0)
         layout.setSpacing(0)
 
-        # Left: macOS Traffic Lights (Close, Min, Zoom/Max)
-        for obj_name in ["btnClose", "btnMin", "btnMax"]:
-            btn = QPushButton("")
-            btn.setObjectName(obj_name)
-            btn.setFixedSize(12, 12)
-            btn.setCursor(QCursor(Qt.PointingHandCursor))
-            btn.clicked.connect(
-                lambda checked, n=obj_name: self._window_action(n))
-            layout.addWidget(btn)
-            layout.addSpacing(8)
-
-        layout.addSpacing(12)
-
-        # Title
+        # Title (left side, Windows style)
         title = QLabel(APP_TITLE)
         title.setObjectName("titleLabel")
         layout.addWidget(title)
 
         layout.addStretch()
 
+        # Right: Windows-style window controls (Min, Max, Close)
+        win_buttons = [("btnMin", "—"), ("btnMax", "□"), ("btnClose", "✕")]
+        for obj_name, text in win_buttons:
+            btn = QPushButton(text)
+            btn.setObjectName(obj_name)
+            btn.setFixedSize(46, 32)
+            btn.setCursor(QCursor(Qt.PointingHandCursor))
+            btn.clicked.connect(
+                lambda checked, n=obj_name: self._window_action(n))
+            layout.addWidget(btn)
+
     def _window_action(self, name):
         if name == "btnMin":
             self._parent.showMinimized()
         elif name == "btnMax":
+            btn = self.findChild(QPushButton, "btnMax")
             if self._parent.isMaximized():
                 self._parent.showNormal()
+                if btn:
+                    btn.setText("□")
             else:
                 self._parent.showMaximized()
+                if btn:
+                    btn.setText("❐")
         elif name == "btnClose":
             self._parent.close()
 
@@ -2001,10 +2003,15 @@ class TitleBar(QWidget):
 
     def mouseDoubleClickEvent(self, event):
         if event.button() == Qt.LeftButton:
+            btn = self.findChild(QPushButton, "btnMax")
             if self._parent.isMaximized():
                 self._parent.showNormal()
+                if btn:
+                    btn.setText("□")
             else:
                 self._parent.showMaximized()
+                if btn:
+                    btn.setText("❐")
 
 
 # ============================================================
@@ -2135,15 +2142,15 @@ class MainWindow(QMainWindow):
 
         self.out_path = QLineEdit()
         self.out_path.setPlaceholderText("选择 XMP 输出文件夹...")
-        self.out_path.setMinimumWidth(300)
-        btm_layout.addWidget(self.out_path, 1)
+        self.out_path.setFixedWidth(320)
+        btm_layout.addWidget(self.out_path)
 
         browse_btn = QPushButton("浏览")
         browse_btn.setObjectName("btnSecondary")
         browse_btn.clicked.connect(self._browse_output)
         btm_layout.addWidget(browse_btn)
 
-        btm_layout.addSpacing(16)
+        btm_layout.addStretch(1)
 
         self.progress = QProgressBar()
         self.progress.setMaximumWidth(180)
