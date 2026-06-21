@@ -1,0 +1,13 @@
+# PixCake XMP Converter - Dependencies
+
+# GUI framework
+PyQt5>=5.15.0
+
+# Optional: RAW file EXIF reading (recommended)
+Pillow>=9.0.0
+exifread>=3.0.0
+
+# Note: PyQt5 is available via:
+#   pip install PyQt5
+# or on Anaconda:
+#   conda install pyqt
