@@ -3,9 +3,10 @@ setlocal EnableDelayedExpansion
 cd /d "%~dp0"
 
 echo [1/5] Reading version from README.md...
-for /f "delims=" %%V in ('python -c "import re,sys; t=open('README.md',encoding='utf-8').read(); m=re.search(r'Version-v([0-9]+\\.[0-9]+\\.[0-9]+)', t); sys.exit(1) if not m else print(m.group(1))"') do set APP_VERSION=%%V
+for /f "usebackq delims=" %%V in (`python read_version.py 2^>nul`) do set APP_VERSION=%%V
 if not defined APP_VERSION (
     echo Failed to read version from README.md badge ^(Version-vX.Y.Z^).
+    echo Make sure Python is installed and README.md contains the version badge.
     exit /b 1
 )
 echo Version: v!APP_VERSION!
